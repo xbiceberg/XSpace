@@ -1200,6 +1200,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
     }
 
+    // MARK: - 菜单项校验
+
+    /// 这些是文件管理器主窗口专属操作。当批量重命名、偏好设置等窗口为 keyWindow 时
+    /// 必须禁用它们，否则系统菜单的键位匹配（如 ⌘V「粘贴到此处」）会抢在输入框前面
+    /// 触发文件粘贴，而不是让文字输入框正常粘贴文本。
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard let sel = menuItem.action else { return true }
+        let paneOnly: Set<Selector> = [
+            #selector(undo), #selector(newFolder), #selector(openSelected),
+            #selector(openInOtherPane), #selector(cutSelected), #selector(copySelected),
+            #selector(pasteHere), #selector(selectAll), #selector(invertSelection),
+            #selector(renameSelected), #selector(trashSelected), #selector(openInTerminal),
+            #selector(copyPath), #selector(goBack), #selector(goForward), #selector(goUp),
+            #selector(refresh), #selector(toggleHiddenFiles), #selector(focusSearch),
+            #selector(toggleSidebar), #selector(sortByName), #selector(sortByModified),
+            #selector(sortBySize), #selector(sortByKind), #selector(goToPath),
+        ]
+        if paneOnly.contains(sel) {
+            // 文字输入态（内联重命名/路径编辑/弹窗，含主窗口内的输入框）时禁用，
+            // 让 ⌘V/⌘C/⌘X/⌘A 等交给输入框处理，而不是触发文件操作。
+            if isEditingTextInput() { return false }
+            // 只有文件管理器主窗口处于活跃状态时才允许这些操作；
+            // 批量重命名/偏好设置等窗口（contentViewController 不是 MainViewController）禁用。
+            guard let key = NSApp.keyWindow, key.contentViewController is MainViewController else {
+                return false
+            }
+            // 撤销项还要结合撤销栈是否为空
+            if sel == #selector(undo) { return FileUndoStack.shared.canUndo }
+        }
+        return true
+    }
+
     // MARK: - 菜单动作
 
     @objc func newWindow() { createWindow() }
