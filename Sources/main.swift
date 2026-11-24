@@ -737,6 +737,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             // 事件交还系统 → 输入框能正常用 ⌘C/⌘V 复制粘贴文字。
             let inFileBrowser = self.isFileBrowserFocused()
 
+            // 文字编辑态（就地重命名 / 路径栏 / 批量重命名输入框等）：
+            // ⌘/⌃ + C/X/V/A 主动派发给字段编辑器的同名 action。
+            //
+            // 背景：用 Windows 键盘并在系统「修饰键」里把 Command 与 Control 互换后，
+            // 文件快捷键仍正常（本监听按 modifierFlags 判断），但 NSTextView 依赖 AppKit
+            // 的键位绑定层把按键翻译成 copy:/paste:，这层在某些键盘映射组合下不会把它
+            // 识别成系统复制/粘贴 —— 于是出现「右键菜单复制粘贴有效、快捷键无效」。
+            // 这里直接调用 NSTextView 的 action（与右键菜单完全相同的路径），
+            // 并同时接受 command / control 修饰键，任何键位映射下都能可靠编辑文字。
+            if self.isEditingTextInput(), !flags.intersection([.command, .control]).isEmpty {
+                let editor: NSTextView? = {
+                    let responder = NSApp.keyWindow?.firstResponder
+                    if let textView = responder as? NSTextView { return textView }
+                    if let textField = responder as? NSTextField {
+                        return textField.currentEditor() as? NSTextView
+                    }
+                    return nil
+                }()
+                if let editor {
+                    switch event.charactersIgnoringModifiers ?? "" {
+                    case "c": editor.copy(nil); return nil
+                    case "x": editor.cut(nil); return nil
+                    case "v": editor.paste(nil); return nil
+                    case "a":
+                        // ⌘A 全选；⌃A 在 NSTextView 里是「移到行首」，保留系统原行为
+                        if flags.contains(.command) { editor.selectAll(nil); return nil }
+                    default: break
+                    }
+                }
+            }
+
             // 自定义撤销快捷键（默认 ⌘Z）。撤销对全 App 生效，但仍不能在文字编辑态抢事件。
             let undoShortcut = AppSettings.undoShortcut
             if event.keyCode == undoShortcut.keyCode,
