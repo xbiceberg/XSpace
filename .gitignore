@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+*.swp
+*.local
+
+# Build output
+build/
+*.app/
+*.xcarchive/
+DerivedData/
+
+# Xcode / Swift
+*.xcuserstate
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Credentials
+*.pem
+*.p12
+*.mobileprovision

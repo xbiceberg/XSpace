@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>zh-Hans</string>
+    <key>CFBundleExecutable</key>
+    <string>XSpace</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.workbuddy.xspace</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>XSpace</string>
+    <key>CFBundleDisplayName</key>
+    <string>XSpace</string>
+    <key>CFBundleIconFile</key>
+    <string>XSpace.icns</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.2.7</string>
+	<key>CFBundleVersion</key>
+	<string>1.2.7</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>zh-Hans</string>
+        <string>en</string>
+    </array>
+    <key>NSHumanReadableDescription</key>
+    <string>三窗格 macOS 文件管理器</string>
+</dict>
+</plist>
