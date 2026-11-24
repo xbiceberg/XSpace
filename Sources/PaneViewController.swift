@@ -1391,12 +1391,24 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         }
     }
 
-    /// 记住上次点击时间，判断“隔 0.5~2 秒再点一次”的重复点击
+    /// 慢速双击重命名（Windows 里叫 "slow double-click" / 单击已选中项重命名）。
+    ///
+    /// Windows 判定参数：注册表 `HKCU\Control Panel\Mouse\DoubleClickSpeed`，默认 500ms，
+    /// 表示「两次点击间隔小于它 = 双击（打开）；大于它 = 两次独立单击」。
+    /// 慢速双击重命名正是利用后者：第一次单击选中，间隔超过双击阈值后再单击一次 → 重命名。
+    /// macOS 里对应的系统参数是 `NSEvent.doubleClickInterval`（随用户在系统设置里的双击速度变化）。
+    ///
+    /// 关键修正：下限必须 >= 系统双击间隔。否则间隔落在「本代码下限 ~ 系统双击间隔」之间时，
+    /// AppKit 会把第二次点击当成双击（clickCount==2）直接打开，永远走不到重命名分支。
     private func isRepeatClick(wasSelected: Bool) -> Bool {
         let now = Date()
         let delta = now.timeIntervalSince(lastClickMoment)
         lastClickMoment = now
-        return wasSelected && delta >= 0.5 && delta <= 2.0
+        // 系统双击间隔 + 少量余量，确保第二次点击不会被 AppKit 判为双击
+        let lowerBound = max(0.5, NSEvent.doubleClickInterval + 0.1)
+        // 上限放宽到 5 秒：给「点一下 → 想一下 → 再点文件名」留足时间
+        let upperBound: TimeInterval = 5.0
+        return wasSelected && delta >= lowerBound && delta <= upperBound
     }
 
     /// 列表里再点一次同一行：进入就地重命名

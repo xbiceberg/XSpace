@@ -730,32 +730,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
         NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
             guard let self = self else { return event }
-            // 弹窗/输入框正在编辑文字时，把按键完全交还系统：
-            // 否则重命名、新建文件夹时按 Delete 会被当成「删除文件」，导致文字删不掉。
-            if self.isEditingTextInput() { return event }
-            // 当前焦点窗口不是文件管理器主窗口时（批量重命名、偏好设置等），
-            // 把按键完全交还系统：否则在重命名窗口按 Delete 会误把主窗格选中的文件移进废纸篓。
-            if let keyWindow = NSApp.keyWindow, !(keyWindow.contentViewController is MainViewController) {
-                return event
-            }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let controller = self.currentController()
-            // 自定义撤销快捷键（默认 ⌘Z），设置里录制后立即生效
+            // 焦点是否落在「文件浏览器」区域（白名单）。所有会改写文件/导航的快捷键都要求它为真。
+            // 任何输入框、字段编辑器、弹窗（批量重命名/偏好设置）聚焦时一律为 false，
+            // 事件交还系统 → 输入框能正常用 ⌘C/⌘V 复制粘贴文字。
+            let inFileBrowser = self.isFileBrowserFocused()
+
+            // 自定义撤销快捷键（默认 ⌘Z）。撤销对全 App 生效，但仍不能在文字编辑态抢事件。
             let undoShortcut = AppSettings.undoShortcut
             if event.keyCode == undoShortcut.keyCode,
-               flags.intersection([.command, .option, .shift, .control]).rawValue == undoShortcut.modifiers {
+               flags.intersection([.command, .option, .shift, .control]).rawValue == undoShortcut.modifiers,
+               inFileBrowser {
                 controller.undo()
                 return nil
             }
-            if flags.contains(.command) {
+            if flags.contains(.command), inFileBrowser {
                 switch event.charactersIgnoringModifiers {
                 case "[": controller.goBack(); return nil
                 case "]": controller.goForward(); return nil
                 case "l": controller.goToPath(); return nil
                 case "f": controller.focusSearch(); return nil
                 // 文件操作快捷键集中在这里处理（已从菜单 keyEquivalent 移除）。
-                // 走到这里说明：不在编辑文字、且当前 keyWindow 就是文件管理器主窗口，
-                // 因此 ⌘C/⌘V/⌘X/⌘A 只作用于文件列表，不会抢弹窗输入框的粘贴/复制。
+                // inFileBrowser 为 true 才走到这里：焦点确实在文件列表，⌘C/⌘V/⌘X/⌘A 只作用于文件。
                 case "c": controller.copySelected(); return nil
                 case "x": controller.cutSelected(); return nil
                 case "v": controller.pasteHere(); return nil
@@ -767,11 +764,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                     return nil
                 }
             }
-            if event.keyCode == 144 { // F2 重命名
+            if event.keyCode == 144, inFileBrowser { // F2 重命名
                 controller.renameSelected()
                 return nil
             }
-            if event.keyCode == 51 || event.keyCode == 117 { // Delete / Forward Delete 直接移到废纸篓
+            if (event.keyCode == 51 || event.keyCode == 117), inFileBrowser { // Delete / Forward Delete 移到废纸篓
                 controller.trashSelectedWithoutConfirm()
                 return nil
             }
@@ -811,6 +808,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if NSApp.keyWindow?.attachedSheet != nil || NSApp.mainWindow?.attachedSheet != nil { return true }
         guard let responder = NSApp.keyWindow?.firstResponder else { return false }
         return responder is NSTextField || responder is NSTextView
+    }
+
+    /// 焦点是否确实落在「文件列表」上（列表视图 / 图标视图 / 侧边栏 / 窗格容器）。
+    /// 文件操作快捷键（⌘C/⌘V/⌘X/⌘A）用白名单判断：只有焦点在文件浏览器区域时才拦截，
+    /// 其余任何情况（重命名框、路径栏、弹窗输入框、字段编辑器等）一律交还给系统，
+    /// 从根本上避免「在输入框里框选文字按 ⌘C，却复制了文件 / 粘贴出文件路径」。
+    func isFileBrowserFocused() -> Bool {
+        guard let window = NSApp.keyWindow else { return false }
+        // 弹窗 / 偏好设置 / 批量重命名窗口都不是文件浏览器主窗口
+        guard window.contentViewController is MainViewController else { return false }
+        // 正在编辑文字（含字段编辑器 NSTextView）时，焦点不属于文件列表
+        if isEditingTextInput() { return false }
+        guard let responder = window.firstResponder else { return false }
+        return responder is PaneTableView || responder is IconCollectionView
+            || responder is PaneContainerView || responder is NSOutlineView
+            || responder is NSScrollView
     }
 
     private func registerScreenshotHotKey() {
