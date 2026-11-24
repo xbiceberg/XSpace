@@ -700,7 +700,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if ProcessInfo.processInfo.environment["XSPACE_OPEN_BULK_RENAME"] != nil {
             currentController().openBulkRename()
         }
-
         NSEvent.addLocalMonitorForEvents(matching: [.otherMouseDown]) { [weak self] event in
             guard let self = self else { return event }
             // Windows 惯例：侧键 4（X1）后退，侧键 5（X2）前进

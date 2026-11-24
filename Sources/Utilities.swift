@@ -1213,6 +1213,32 @@ enum Dialog {
         guard response == .alertFirstButtonReturn else { return nil }
         return field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    /// 文件同名冲突：替换 / 改名 / 取消 三选一
+    static func chooseConflict(fileName: String, existingName: String) -> ConflictChoice {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "目标位置已存在同名文件"
+        alert.informativeText = "「\(fileName)」与现有的「\(existingName)」内容不同。\n\n"
+            + "替换：用新文件覆盖现有文件\n"
+            + "改名：自动在文件名后加编号（保留两份）\n"
+            + "取消：跳过此文件，不做改动"
+        alert.addButton(withTitle: "替换")
+        alert.addButton(withTitle: "改名")
+        alert.addButton(withTitle: "取消")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .replace
+        case .alertSecondButtonReturn: return .rename
+        default: return .cancel
+        }
+    }
+}
+
+/// 移动文件遇到同名冲突时用户的选择
+enum ConflictChoice {
+    case replace
+    case rename
+    case cancel
 }
 
 enum ShellPath {
@@ -1256,36 +1282,127 @@ enum FileOperations {
         }
     }
 
+    // MARK: - 同名冲突处理
+
+    /// 单个移动项的冲突决策结果
+    private enum ConflictResolution {
+        case identical          // 内容一致：删掉来源，保留目标那一份
+        case replaceExisting    // 用户选“替换”：删目标再移动
+        case useDestination(URL)// 用户选“改名”：移动到带编号的新路径
+        case skip               // 取消 / 无需处理
+    }
+
+    /// 判断移动 `source` 到 `destination` 时该如何处理同名冲突。
+    /// 只比较普通文件；目录、无法读取的文件一律交给用户决定。
+    private static func resolveMoveConflict(source: URL, destination: URL) -> ConflictResolution {
+        // 同一路径（例如拖回当前目录）：什么都不做，避免误删自己
+        if source.standardizedFileURL.path == destination.standardizedFileURL.path { return .skip }
+
+        let fm = FileManager.default
+        var sourceIsDir: ObjCBool = false
+        var destIsDir: ObjCBool = false
+        guard fm.fileExists(atPath: source.path, isDirectory: &sourceIsDir),
+              fm.fileExists(atPath: destination.path, isDirectory: &destIsDir) else {
+            return .skip
+        }
+
+        // 目录没有单一的文件内容哈希；直接用大小/结构也不可靠，交由用户决定
+        if sourceIsDir.boolValue || destIsDir.boolValue {
+            return askConflict(source: source, destination: destination)
+        }
+
+        // 先用文件大小快速排除：大小不同则内容必然不同，省去大文件哈希计算
+        let sSize = try? fm.attributesOfItem(atPath: source.path)[.size] as? NSNumber
+        let dSize = try? fm.attributesOfItem(atPath: destination.path)[.size] as? NSNumber
+        if sSize != nil, dSize != nil, sSize != dSize {
+            return askConflict(source: source, destination: destination)
+        }
+
+        // 大小相同再用 SHA-256 流式比对，避免大文件一次性载入内存
+        if let sHash = try? HashComputer.hash(source, kind: .sha256),
+           let dHash = try? HashComputer.hash(destination, kind: .sha256),
+           sHash == dHash {
+            return .identical
+        }
+        return askConflict(source: source, destination: destination)
+    }
+
+    private static func askConflict(source: URL, destination: URL) -> ConflictResolution {
+        switch Dialog.chooseConflict(fileName: source.lastPathComponent,
+                                     existingName: destination.lastPathComponent) {
+        case .replace: return .replaceExisting
+        case .rename:  return .useDestination(uniqueURL(for: destination))
+        case .cancel:  return .skip
+        }
+    }
+
     static func copyItems(_ urls: [URL], into directory: URL, move: Bool = false, replace: Bool = false) -> [URL] {
         var results: [URL] = []
         var pairs: [(source: URL, destination: URL)] = []
+        // 内容一致被删掉的来源：撤销时需要从保留的那一份再复制回来
+        var identicalDedup: [(source: URL, kept: URL)] = []
         for url in urls {
-            var destination = directory.appendingPathComponent(url.lastPathComponent)
-            if !replace { destination = uniqueURL(for: destination) }
+            let desired = directory.appendingPathComponent(url.lastPathComponent)
+            var destination = desired
+            var deduplicate = false
+            var skip = false
+            var overwrite = replace // 外部显式要求替换时保持原行为
+
+            if move && !replace && FileManager.default.fileExists(atPath: desired.path) {
+                // 移动且目标已有同名：走冲突决策（哈希对比 / 三选一）
+                switch resolveMoveConflict(source: url, destination: desired) {
+                case .identical:
+                    deduplicate = true
+                case .replaceExisting:
+                    overwrite = true // 删掉已有目标，再移动过来
+                case .useDestination(let unique):
+                    destination = unique
+                case .skip:
+                    skip = true
+                }
+            } else if !replace {
+                destination = uniqueURL(for: destination)
+            }
+            if skip { continue }
+
             do {
-                if FileManager.default.fileExists(atPath: destination.path) && replace {
-                    try FileManager.default.removeItem(at: destination)
-                }
-                if move {
-                    try FileManager.default.moveItem(at: url, to: destination)
+                if deduplicate {
+                    // 内容完全一致：删掉来源，只保留目标已有的那一份
+                    try FileManager.default.removeItem(at: url)
+                    identicalDedup.append((url, desired))
+                    results.append(desired)
                 } else {
-                    try FileManager.default.copyItem(at: url, to: destination)
+                    if FileManager.default.fileExists(atPath: destination.path) && overwrite {
+                        try FileManager.default.removeItem(at: destination)
+                    }
+                    if move {
+                        try FileManager.default.moveItem(at: url, to: destination)
+                    } else {
+                        try FileManager.default.copyItem(at: url, to: destination)
+                    }
+                    results.append(destination)
+                    pairs.append((url, destination))
                 }
-                results.append(destination)
-                pairs.append((url, destination))
             } catch {
                 Dialog.alert(title: "操作失败", message: "\(url.lastPathComponent)：\(error.localizedDescription)")
             }
         }
-        if !pairs.isEmpty {
+        let total = pairs.count + identicalDedup.count
+        if total > 0 {
             let verb = move ? "移动" : "复制"
-            FileUndoStack.shared.record("\(verb) \(pairs.count) 个项目") {
+            FileUndoStack.shared.record("\(verb) \(total) 个项目") {
                 for pair in pairs.reversed() {
                     if move {
                         _ = UndoIO.move(pair.destination, to: pair.source)
                     } else {
                         _ = UndoIO.remove(pair.destination)
                     }
+                }
+                // 哈希一致而被删除的来源：从保留的目标复制回去，恢复原状
+                for pair in identicalDedup.reversed() {
+                    guard !FileManager.default.fileExists(atPath: pair.source.path),
+                          FileManager.default.fileExists(atPath: pair.kept.path) else { continue }
+                    try? FileManager.default.copyItem(at: pair.kept, to: pair.source)
                 }
             }
         }
