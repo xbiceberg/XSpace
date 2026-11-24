@@ -666,6 +666,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private weak var preferencesTabs: NSTabView?
     /// 只有用户从“彻底退出”入口调用时才允许真正结束进程
     private var allowTermination = false
+    /// 系统正在关机/重启：此时必须放行退出，否则 macOS 会判定本 App 阻止关机
+    private var isSystemShuttingDown = false
 
     func application(_ application: NSApplication, shouldRestoreApplicationState coder: NSCoder) -> Bool {
         false
@@ -679,6 +681,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         buildMainMenu()
         _ = createWindow()
         NSApp.activate(ignoringOtherApps: true)
+
+        // 系统关机/重启/注销时放行真正退出，避免「XSpace 阻止了关机」。
+        // willPowerOffNotification 覆盖关机与重启；注销走 currentEvent 判断（见下）。
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(systemWillPowerOff),
+            name: NSWorkspace.willPowerOffNotification,
+            object: nil
+        )
 
         // 自动化/排查用：设置 XSPACE_OPEN_PREFS=1 可直接打开偏好设置，
         // 并用 XSPACE_PREFS_TAB=appearance|wallpaper|layout|general|contextMenu 定位到指定标签页。
@@ -890,10 +901,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
     }
 
-    /// 任何退出请求（⌘Q / Dock 退出 / NSApp.terminate）都改为隐藏到后台，
-    /// 保证全局截图热键一直可用；只有菜单里的“彻底退出”才真正结束进程。
+    /// 收到系统关机/重启通知：标记后放行真正退出，绝不阻止系统关机。
+    @objc private func systemWillPowerOff() {
+        isSystemShuttingDown = true
+    }
+
+    /// ⌘Q / Dock 退出 / 点红叉都改为隐藏到后台，保证全局截图热键常驻；
+    /// 但系统关机/重启/注销必须放行，否则会出现「XSpace 阻止了关机」并卡住关机流程。
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if allowTermination { return .terminateNow }
+        // 收到 willPowerOffNotification（关机/重启）或用户点了“彻底退出”：立即退出
+        if allowTermination || isSystemShuttingDown { return .terminateNow }
+        // 注销（logout）不会发 willPowerOffNotification，但此时没有键盘/鼠标事件触发退出，
+        // 而用户主动 ⌘Q 会带 keyDown 事件。借此区分：无用户事件的退出请求视为系统发起，放行。
+        if !allowTermination, sender.currentEvent == nil { return .terminateNow }
         hideToBackground()
         return .terminateCancel
     }
