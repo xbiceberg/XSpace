@@ -18,3 +18,6 @@ DerivedData/
 *.pem
 *.p12
 *.mobileprovision
+
+# Release binaries
+XSpace-*.zip
