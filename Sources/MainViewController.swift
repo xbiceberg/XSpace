@@ -346,8 +346,12 @@ final class MainViewController: NSViewController, PaneDelegate, SidebarDelegate,
         }
         let controller = BulkRenameWindowController(files: candidates)
         controller.onClose = { [weak self] in self?.bulkRenameController = nil }
-        controller.showWindow(nil)
         controller.window?.center()
+        // 明确让弹出窗口成为 keyWindow 并激活 App：
+        // 否则焦点仍停留在文件管理器主窗口，菜单的 ⌘V 会触发文件粘贴而非窗口内文字粘贴。
+        controller.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        controller.window?.makeKeyAndOrderFront(nil)
         bulkRenameController = controller
     }
 
