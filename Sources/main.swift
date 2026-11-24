@@ -637,7 +637,7 @@ final class SettingCardView: NSView {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate, NSMenuItemValidation {
     private var controllers: [NSWindow: MainViewController] = [:]
     /// 主窗口（「新窗口打开」弹出的独立单窗口不算）
     private weak var mainWindow: NSWindow?
@@ -753,6 +753,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 case "]": controller.goForward(); return nil
                 case "l": controller.goToPath(); return nil
                 case "f": controller.focusSearch(); return nil
+                // 文件操作快捷键集中在这里处理（已从菜单 keyEquivalent 移除）。
+                // 走到这里说明：不在编辑文字、且当前 keyWindow 就是文件管理器主窗口，
+                // 因此 ⌘C/⌘V/⌘X/⌘A 只作用于文件列表，不会抢弹窗输入框的粘贴/复制。
+                case "c": controller.copySelected(); return nil
+                case "x": controller.cutSelected(); return nil
+                case "v": controller.pasteHere(); return nil
+                case "a": controller.selectAll(); return nil
                 default: break
                 }
                 if flags.contains(.shift), event.charactersIgnoringModifiers == "N" {
@@ -1062,10 +1069,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         add("打开", #selector(openSelected), "o", to: menu)
         add("在新窗格中打开", #selector(openInOtherPane), "o", to: menu, modifiers: [.command, .option])
         menu.addItem(.separator())
-        add("剪切", #selector(cutSelected), "x", to: menu)
-        add("复制", #selector(copySelected), "c", to: menu)
-        add("粘贴到此处", #selector(pasteHere), "v", to: menu)
-        add("全选", #selector(selectAll), "a", to: menu)
+        // 这四项不再注册为菜单 keyEquivalent：菜单快捷键是全局匹配的，
+        // 弹窗/输入框获得焦点时按 ⌘V/⌘C 会抢先触发文件粘贴/复制，导致
+        // 「重命名窗口粘贴成文件」「框选文字复制到文件路径」。
+        // 改由 applicationDidFinishLaunching 里的全局 keyDown 监听按焦点分发。
+        add("剪切    ⌘X", #selector(cutSelected), "", to: menu)
+        add("复制    ⌘C", #selector(copySelected), "", to: menu)
+        add("粘贴到此处    ⌘V", #selector(pasteHere), "", to: menu)
+        add("全选    ⌘A", #selector(selectAll), "", to: menu)
         menu.addItem(.separator())
         add("重命名", #selector(renameSelected), "", to: menu)
         add("移到废纸篓", #selector(trashSelected), "", to: menu)
@@ -1205,7 +1216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     /// 这些是文件管理器主窗口专属操作。当批量重命名、偏好设置等窗口为 keyWindow 时
     /// 必须禁用它们，否则系统菜单的键位匹配（如 ⌘V「粘贴到此处」）会抢在输入框前面
     /// 触发文件粘贴，而不是让文字输入框正常粘贴文本。
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         guard let sel = menuItem.action else { return true }
         let paneOnly: Set<Selector> = [
             #selector(undo), #selector(newFolder), #selector(openSelected),
