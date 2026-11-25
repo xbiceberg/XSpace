@@ -18,25 +18,29 @@ enum FileIconCatalog {
         "wav", "wma", "wmv"
     ]
 
-    /// 有独立图标的压缩类型；其余归档类型统一使用「压缩包」图标
-    static let archiveExtensions: [String] = ["7z", "rar", "zip"]
-
-    /// 支持但没有独立图标、统一使用「压缩包」图标的类型
-    static let genericArchiveExtensions: [String] = [
-        "tar", "gz", "tgz", "bz2", "xz", "cab", "z", "cpio", "zst",
-        "arj", "lzh", "lha", "wim", "iso"
+    /// 图标库「压缩包」目录中的全部扩展名，均有独立图标
+    static let archiveExtensions: [String] = [
+        "7z", "arj", "bz2", "cab", "cpio", "gz", "iso", "lha", "lzh",
+        "rar", "tar", "tgz", "wim", "xz", "z", "zip", "zst"
     ]
+
+    /// 图标库「其他」目录中的扩展名，放在设置页「自定义」分类里
+    static let otherExtensions: [String] = [
+        "bmp", "doc", "docx", "ppt", "pptx", "txt", "xls", "xlsx"
+    ]
+
+    /// 自定义分类中内置图标的数量，用于区分「还原」和「删除」操作
+    static var builtinOtherCount: Int { otherExtensions.count }
 
     static func isKnown(_ ext: String) -> Bool {
         let key = ext.lowercased()
         return mediaExtensions.contains(key)
             || archiveExtensions.contains(key)
-            || genericArchiveExtensions.contains(key)
+            || otherExtensions.contains(key)
     }
 
     static func isArchive(_ ext: String) -> Bool {
-        let key = ext.lowercased()
-        return archiveExtensions.contains(key) || genericArchiveExtensions.contains(key)
+        return archiveExtensions.contains(ext.lowercased())
     }
 }
 
@@ -78,12 +82,8 @@ enum FileIconResolver {
            FileManager.default.fileExists(atPath: custom) {
             return URL(fileURLWithPath: custom)
         }
-        if FileIconCatalog.mediaExtensions.contains(key) || FileIconCatalog.archiveExtensions.contains(key),
+        if FileIconCatalog.isKnown(key),
            let url = Bundle.main.url(forResource: key, withExtension: "png", subdirectory: "FileIcons") {
-            return url
-        }
-        if FileIconCatalog.genericArchiveExtensions.contains(key),
-           let url = Bundle.main.url(forResource: "archive", withExtension: "png", subdirectory: "FileIcons") {
             return url
         }
         return nil
@@ -319,6 +319,12 @@ final class IconSettingsView: NSView {
         reset.bezelStyle = .rounded
         addSubview(reset)
 
+        if let raw = ProcessInfo.processInfo.environment["XSPACE_ICON_CATEGORY"],
+           let index = Int(raw), (0..<3).contains(index) {
+            category = index
+            segmented.selectedSegment = index
+        }
+
         observer = NotificationCenter.default.addObserver(
             forName: .xspaceFileIconsChanged, object: nil, queue: .main
         ) { [weak self] _ in self?.reloadGrid() }
@@ -336,8 +342,9 @@ final class IconSettingsView: NSView {
     private var currentExtensions: [String] {
         switch category {
         case 0: return FileIconCatalog.mediaExtensions
-        case 1: return FileIconCatalog.archiveExtensions + FileIconCatalog.genericArchiveExtensions
-        default: return AppSettings.customIconExtensions
+        case 1: return FileIconCatalog.archiveExtensions
+        default: return FileIconCatalog.otherExtensions
+            + AppSettings.customIconExtensions.filter { !FileIconCatalog.isKnown($0) }
         }
     }
 
@@ -375,7 +382,7 @@ final class IconSettingsView: NSView {
             cell.changeButton.target = self
             cell.changeButton.action = #selector(changeIcon(_:))
             cell.changeButton.tag = index
-            if category == 2 {
+            if category == 2 && index >= FileIconCatalog.builtinOtherCount {
                 cell.resetButton.title = "删除"
                 cell.resetButton.target = self
                 cell.resetButton.action = #selector(removeCustomType(_:))
@@ -409,7 +416,7 @@ final class IconSettingsView: NSView {
             Dialog.alert(title: "保存失败", message: "无法保存图标文件，请重试。", window: window)
             return
         }
-        if category == 2 {
+        if category == 2 && sender.tag >= FileIconCatalog.builtinOtherCount {
             AppSettings.addCustomIconExtension(ext)
         }
         AppSettings.setFileIconOverride(ext, path: stored)
@@ -431,7 +438,7 @@ final class IconSettingsView: NSView {
             return
         }
         guard !FileIconCatalog.isKnown(ext) else {
-            Dialog.alert(title: "该类型已存在", message: "「\(ext.uppercased())」已在视音频或压缩分类中，请直接更换其图标。", window: window)
+            Dialog.alert(title: "该类型已存在", message: "「\(ext.uppercased())」已在现有分类中，请直接更换其图标。", window: window)
             return
         }
         guard let path = chooseIconFile(), let image = NSImage(contentsOf: URL(fileURLWithPath: path)) else { return }
@@ -445,7 +452,8 @@ final class IconSettingsView: NSView {
 
     @objc private func removeCustomType(_ sender: NSButton) {
         let exts = currentExtensions
-        guard exts.indices.contains(sender.tag) else { return }
+        guard exts.indices.contains(sender.tag),
+              sender.tag >= FileIconCatalog.builtinOtherCount else { return }
         AppSettings.removeCustomIconExtension(exts[sender.tag])
     }
 
