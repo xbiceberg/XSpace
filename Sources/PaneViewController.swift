@@ -635,7 +635,7 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
                 self.tableView.deselectAll(nil)
             }
             let screenPoint = self.view.window?.convertPoint(toScreen: event.locationInWindow) ?? event.locationInWindow
-            self.contextMenu(onBlank: onBlank).popUp(positioning: nil, at: screenPoint, in: nil)
+            self.popUpContextMenu(self.contextMenu(onBlank: onBlank), at: screenPoint)
         }
         tableView.style = .plain
         tableView.rowHeight = max(24, AppSettings.textSize(for: index) + 12)
@@ -764,7 +764,7 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
                 self.collectionView.deselectAll(nil)
             }
             let screenPoint = self.view.window?.convertPoint(toScreen: event.locationInWindow) ?? event.locationInWindow
-            self.contextMenu(onBlank: onBlank).popUp(positioning: nil, at: screenPoint, in: nil)
+            self.popUpContextMenu(self.contextMenu(onBlank: onBlank), at: screenPoint)
         }
     }
 
@@ -1748,6 +1748,25 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         kept.forEach { menu.addItem($0) }
     }
 
+    /// 在屏幕坐标处弹出右键菜单；若菜单向下会超出屏幕底部，则整体向上移动以完整显示。
+    private func popUpContextMenu(_ menu: NSMenu, at screenPoint: NSPoint) {
+        menu.update()
+        var point = screenPoint
+        let screen = view.window?.screen ?? NSScreen.main
+        if let visible = screen?.visibleFrame {
+            let size = (menu.value(forKey: "size") as? NSSize) ?? NSSize(width: 260, height: 360)
+            let margin: CGFloat = 4
+            // 菜单自 point 向下展开；若底部越过可见区下沿，上移到菜单底部贴住下沿
+            let bottom = point.y - size.height
+            if bottom < visible.minY + margin {
+                point.y = min(visible.minY + margin + size.height, visible.maxY - margin)
+            }
+            // 水平方向同样保证完整露出
+            point.x = min(max(point.x, visible.minX + margin), visible.maxX - size.width - margin)
+        }
+        menu.popUp(positioning: nil, at: point, in: nil)
+    }
+
     /// - Parameter onBlank: 是否在空白处右键。空白处只显示「新建文件夹 / 粘贴 / 刷新」，
     ///   文件上右键则显示文件操作项且不含这三项；「粘贴」在剪贴板无文件时完全隐藏。
     private func contextMenu(onBlank: Bool = false) -> NSMenu {
@@ -2031,9 +2050,18 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         return displayedItems[row].url.dragPasteboardItem
     }
 
+    /// 拖放操作类型：压缩包来源、按住 Option、或源文件位于只读卷时按复制处理。
+    private func dragOperation(for info: NSDraggingInfo) -> NSDragOperation {
+        let pasteboard = info.draggingPasteboard
+        if pasteboard.string(forType: SevenZip.archiveDragMarker) == "1" { return .copy }
+        if NSEvent.modifierFlags.contains(.option) { return .copy }
+        let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]) ?? []
+        if urls.contains(where: { FileOperations.isOnReadOnlyVolume($0) }) { return .copy }
+        return .move
+    }
+
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation operation: NSTableView.DropOperation) -> NSDragOperation {
-        if info.draggingPasteboard.string(forType: SevenZip.archiveDragMarker) == "1" { return .copy }
-        return NSEvent.modifierFlags.contains(.option) ? .copy : .move
+        return dragOperation(for: info)
     }
 
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
@@ -2042,8 +2070,7 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
 
     /// 整个窗格级别的拖放校验（用于容器视图接收非表格区域的拖放）
     func validateExternalDrop(_ info: NSDraggingInfo) -> NSDragOperation {
-        if info.draggingPasteboard.string(forType: SevenZip.archiveDragMarker) == "1" { return .copy }
-        return NSEvent.modifierFlags.contains(.option) ? .copy : .move
+        return dragOperation(for: info)
     }
 
     /// 供图标视图判断是否落在文件夹 item 上
@@ -2175,8 +2202,7 @@ private extension NSMenu {
 
 extension PaneViewController {
     func collectionView(_ collectionView: NSCollectionView, validateDrop draggingInfo: NSDraggingInfo, proposedIndexPath proposedDropIndexPath: AutoreleasingUnsafeMutablePointer<IndexPath>, dropOperation proposedDropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>) -> NSDragOperation {
-        if draggingInfo.draggingPasteboard.string(forType: SevenZip.archiveDragMarker) == "1" { return .copy }
-        return NSEvent.modifierFlags.contains(.option) ? .copy : .move
+        return dragOperation(for: draggingInfo)
     }
 }
 

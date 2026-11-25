@@ -1336,7 +1336,14 @@ enum FileOperations {
         }
     }
 
+    /// 源文件位于只读卷（挂载的 DMG、光盘等）时无法移动，自动按复制处理。
+    static func isOnReadOnlyVolume(_ url: URL) -> Bool {
+        ((try? url.resourceValues(forKeys: [.volumeIsReadOnlyKey]))?.volumeIsReadOnly) == true
+    }
+
     static func copyItems(_ urls: [URL], into directory: URL, move: Bool = false, replace: Bool = false) -> [URL] {
+        // 只读卷上的文件不能移动，整批降级为复制，避免“操作不允许”报错
+        let effectiveMove = move && !urls.contains { isOnReadOnlyVolume($0) }
         var results: [URL] = []
         var pairs: [(source: URL, destination: URL)] = []
         // 内容一致被删掉的来源：撤销时需要从保留的那一份再复制回来
@@ -1348,7 +1355,7 @@ enum FileOperations {
             var skip = false
             var overwrite = replace // 外部显式要求替换时保持原行为
 
-            if move && !replace && FileManager.default.fileExists(atPath: desired.path) {
+            if effectiveMove && !replace && FileManager.default.fileExists(atPath: desired.path) {
                 // 移动且目标已有同名：走冲突决策（哈希对比 / 三选一）
                 switch resolveMoveConflict(source: url, destination: desired) {
                 case .identical:
@@ -1375,7 +1382,7 @@ enum FileOperations {
                     if FileManager.default.fileExists(atPath: destination.path) && overwrite {
                         try FileManager.default.removeItem(at: destination)
                     }
-                    if move {
+                    if effectiveMove {
                         try FileManager.default.moveItem(at: url, to: destination)
                     } else {
                         try FileManager.default.copyItem(at: url, to: destination)
@@ -1389,10 +1396,10 @@ enum FileOperations {
         }
         let total = pairs.count + identicalDedup.count
         if total > 0 {
-            let verb = move ? "移动" : "复制"
+            let verb = effectiveMove ? "移动" : "复制"
             FileUndoStack.shared.record("\(verb) \(total) 个项目") {
                 for pair in pairs.reversed() {
-                    if move {
+                    if effectiveMove {
                         _ = UndoIO.move(pair.destination, to: pair.source)
                     } else {
                         _ = UndoIO.remove(pair.destination)
