@@ -1659,34 +1659,8 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     @objc func showInfo() {
-        let urls = selectedURLs()
-        guard !urls.isEmpty else { return }
-        // 调用访达的「显示简介」（等价选中后按 ⌘I），多选时由访达显示“多个项目”的简介窗口
-        let aliases = urls.map { "(POSIX file \(Self.asAppleScriptString($0.path)) as alias)" }
-                          .joined(separator: ", ")
-        let target = urls.count == 1 ? aliases : "{\(aliases)}"
-        let source = "tell application \"Finder\"\n"
-                   + "  activate\n"
-                   + "  select \(target)\n"
-                   + "  open information window of (selection)\n"
-                   + "end tell"
-        var error: NSDictionary?
-        let script = NSAppleScript(source: source)
-        script?.executeAndReturnError(&error)
-        if error == nil { return }
-
-        // 访达脚本被拒（如自动化权限未授权）时：打开访达并选中文件，提示按 ⌘I
-        NSWorkspace.shared.activateFileViewerSelecting(urls)
-        Dialog.alert(title: "显示简介",
-                     message: "已在新访达窗口中选中文件，请按 ⌘I 查看简介。",
-                     window: view.window)
-    }
-
-    /// 把路径转成 AppleScript 双引号字符串，转义反斜杠与双引号
-    private static func asAppleScriptString(_ path: String) -> String {
-        let escaped = path.replacingOccurrences(of: "\\", with: "\\\\")
-                          .replacingOccurrences(of: "\"", with: "\\\"")
-        return "\"\(escaped)\""
+        guard let url = selectedURLs().first else { return }
+        FileInfoWindowController.show(for: url)
     }
 
     @objc func toggleHiddenFiles() {
