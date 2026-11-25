@@ -314,12 +314,17 @@ final class ScreenshotEditorView: NSView {
     // MARK: - 绘制
 
     override func draw(_ dirtyRect: NSRect) {
+        // 先把抓取到的整屏画面铺满窗口，让整个屏幕在选区前就“定住”，
+        // 底下实时变化的窗口/动画不会再透出来（与系统截图一致）。
+        backgroundImage?.draw(in: bounds)
+        // 选区外统一压暗，突出即将框选的区域
         NSColor.black.withAlphaComponent(0.42).setFill()
         NSBezierPath(rect: bounds).fill()
         guard !selectionRect.isEmpty else { return }
 
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: selectionRect).addClip()
+        // 选区内重画原始定格画面，覆盖掉压暗层，保持清晰
         backgroundImage?.draw(in: bounds)
         let tile = mosaicTileForDrawing()
         let context = DrawContext.canvas(selectionRect)
@@ -667,8 +672,9 @@ final class ScreenshotEditorController: NSObject {
                                    backing: .buffered,
                                    defer: false)
         win.level = .screenSaver
-        win.isOpaque = false
-        win.backgroundColor = .clear
+        // 不透明窗口：整屏定格画面绘制后，底下实时屏幕完全不会透出
+        win.isOpaque = true
+        win.backgroundColor = .black
         win.ignoresMouseEvents = false
         win.isReleasedWhenClosed = false
         win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]

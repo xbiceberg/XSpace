@@ -732,6 +732,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if ProcessInfo.processInfo.environment["XSPACE_OPEN_BULK_RENAME"] != nil {
             currentController().openBulkRename()
         }
+        // 自动化/排查用：XSPACE_START_SCREENSHOT=1 启动即进入截图选区，便于验证整屏定格
+        if ProcessInfo.processInfo.environment["XSPACE_START_SCREENSHOT"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                _ = ScreenshotEditorController.shared.start()
+            }
+        }
         NSEvent.addLocalMonitorForEvents(matching: [.otherMouseDown]) { [weak self] event in
             guard let self = self else { return event }
             // Windows 惯例：侧键 4（X1）后退，侧键 5（X2）前进
