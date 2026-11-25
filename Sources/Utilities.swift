@@ -1467,16 +1467,37 @@ enum FileOperations {
     }
 }
 
-extension URL {
-    /// Finder 兼容的拖放项：除 public.file-url 外，同时写入旧式 NSFilenamesPboardType
-    /// 和路径文本，便于只识别这些类型的第三方播放器接收文件。
-    var dragPasteboardItem: NSPasteboardItem {
-        let item = NSPasteboardItem()
-        item.setString(absoluteString, forType: .fileURL)
-        item.setPropertyList([path], forType: NSPasteboard.PasteboardType(rawValue: "NSFilenamesPboardType"))
-        item.setString(path, forType: .string)
-        return item
+/// Finder 原生格式的拖放项：完整转发 NSURL 写入的所有类型（public.file-url、
+/// NSFilenamesPboardType、Apple URL pasteboard type 及 dyn.* 别名类型），不额外写入
+/// 纯文本类型。Electron/Chromium 应用（极空间、百度网盘等）依赖别名类型识别文件，
+/// 若混入 public.utf8-plain-text 会优先按文本处理而拒绝；IINA 等播放器读取
+/// NSFilenamesPboardType，原生格式同样包含。可附加自定义标记供内部拖放识别。
+final class FinderDragItem: NSObject, NSPasteboardWriting {
+    private let url: URL
+    private let marker: (type: NSPasteboard.PasteboardType, value: String)?
+
+    init(_ url: URL, marker: (type: NSPasteboard.PasteboardType, value: String)? = nil) {
+        self.url = url
+        self.marker = marker
     }
+
+    func writableTypes(for pasteboard: NSPasteboard) -> [NSPasteboard.PasteboardType] {
+        var types = (url as NSURL).writableTypes(for: pasteboard)
+        if let marker, !types.contains(marker.type) {
+            types.append(marker.type)
+        }
+        return types
+    }
+
+    func pasteboardPropertyList(forType type: NSPasteboard.PasteboardType) -> Any? {
+        if let marker, type == marker.type { return marker.value }
+        return (url as NSURL).pasteboardPropertyList(forType: type)
+    }
+}
+
+extension URL {
+    /// Finder 兼容的拖放项，保留 NSURL 原生写入的全套类型。
+    var dragPasteboardItem: FinderDragItem { FinderDragItem(self) }
 }
 
 extension Array where Element == URL {

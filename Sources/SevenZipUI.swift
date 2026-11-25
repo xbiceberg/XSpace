@@ -529,9 +529,8 @@ final class ArchiveBrowserController: NSWindowController, NSTableViewDataSource,
     /// 附加私有标记后，XSpace 主窗口知道这是从压缩包拖出的，强制按“复制”处理。
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
         guard row < items.count else { return nil }
-        let item = items[row].url.dragPasteboardItem
-        item.setString("1", forType: SevenZip.archiveDragMarker)
-        return item
+        return FinderDragItem(items[row].url,
+                              marker: (SevenZip.archiveDragMarker, "1"))
     }
 
     func windowWillClose(_ notification: Notification) {
