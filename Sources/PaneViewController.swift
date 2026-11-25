@@ -33,6 +33,23 @@ final class PaneContainerView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
 
+    /// 让整个窗格（含工具栏与空白区）都能接收 fileURL 拖放，避免只能拖到表格行上才生效
+    func enableFileDrop() {
+        registerForDraggedTypes([.fileURL])
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        pane?.validateExternalDrop(sender) ?? []
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        pane?.validateExternalDrop(sender) ?? []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        pane?.handleExternalDrop(sender) ?? false
+    }
+
     override func mouseDown(with event: NSEvent) {
         pane?.activate()
         super.mouseDown(with: event)
@@ -51,21 +68,62 @@ final class IconCollectionView: NSCollectionView {
     /// 单击：索引、点击前是否已选中、点击位置（用于“再点一次文件名即重命名”）
     var onSingleClickItem: ((IndexPath, Bool, NSPoint) -> Void)?
     var onContextMenu: ((NSEvent) -> Void)?
+    weak var pane: PaneViewController?
+    /// Windows 风格 Shift 连续多选的锚点（上一次普通点击的 item）
+    private var shiftAnchorItem: Int?
+
+    /// 目录/排序变化时重置 Shift 锚点
+    func resetShiftAnchor() { shiftAnchorItem = nil }
+
+    /// 图标视图的 NSCollectionViewDelegate 落点方法只在有效 item 上调用，拖到空白处会被拒。
+    /// 直接重写拖拽目标方法，任何位置都转发给窗格处理，与列表模式行为一致。
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        pane?.validateExternalDrop(sender) ?? []
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        pane?.validateExternalDrop(sender) ?? []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        // 若正好落在文件夹 item 上则进入该文件夹，否则交给窗格落到当前目录
+        let point = convert(sender.draggingLocation, from: nil)
+        if let indexPath = indexPathForItem(at: point),
+           let url = pane?.urlForDisplayedItem(at: indexPath.item),
+           (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+            return pane?.handleExternalDrop(sender, into: url) ?? false
+        }
+        return pane?.handleExternalDrop(sender) ?? false
+    }
 
     override func mouseDown(with event: NSEvent) {
         onActivate?()
         let point = convert(event.locationInWindow, from: nil)
         let indexPath = indexPathForItem(at: point)
         let wasSelected = indexPath.map { selectionIndexes.contains($0.item) } ?? false
-        super.mouseDown(with: event)
-        guard let indexPath else { return }
-        let modifiers = event.modifierFlags.intersection([.shift, .command])
-        if modifiers.isEmpty, !selectionIndexes.contains(indexPath.item) {
-            selectItems(at: [indexPath], scrollPosition: [])
+        let shiftHeld = event.modifierFlags.contains(.shift)
+        let commandHeld = event.modifierFlags.contains(.command)
+
+        // Windows 风格：按住 Shift 点击时，选中锚点到当前 item 的连续区间
+        if shiftHeld, let indexPath, let anchor = shiftAnchorItem {
+            let low = min(anchor, indexPath.item)
+            let high = max(anchor, indexPath.item)
+            let paths = Set((low...high).map { IndexPath(item: $0, section: 0) })
+            selectItems(at: paths, scrollPosition: [])
+        } else {
+            super.mouseDown(with: event)
+            if let indexPath, !shiftHeld, !commandHeld {
+                shiftAnchorItem = indexPath.item
+            }
+            if let indexPath, !shiftHeld, !commandHeld, !selectionIndexes.contains(indexPath.item) {
+                selectItems(at: [indexPath], scrollPosition: [])
+            }
         }
+
+        guard let indexPath else { return }
         if event.clickCount == 2 {
             onDoubleClickItem?(indexPath)
-        } else if event.clickCount == 1 {
+        } else if event.clickCount == 1, !shiftHeld {
             onSingleClickItem?(indexPath, wasSelected, point)
         }
     }
@@ -107,17 +165,37 @@ final class PaneTableView: NSTableView {
     /// 单击：行号、点击前该行是否已选中、点击位置（用于“再点一次文件名即重命名”）
     var onSingleClickRow: ((Int, Bool, NSPoint) -> Void)?
     var onContextMenu: ((NSEvent) -> Void)?
+    /// Windows 风格 Shift 连续多选的锚点（上一次普通点击的行）
+    private var shiftAnchorRow: Int?
+
+    /// 目录/排序变化时重置 Shift 锚点
+    func resetShiftAnchor() { shiftAnchorRow = nil }
 
     override func mouseDown(with event: NSEvent) {
         onActivate?()
         let point = convert(event.locationInWindow, from: nil)
         let clickedRow = row(at: point)
         let wasSelected = clickedRow >= 0 && selectedRowIndexes.contains(clickedRow)
-        super.mouseDown(with: event)
+        let shiftHeld = event.modifierFlags.contains(.shift)
+
+        // Windows 风格：按住 Shift 点击时，选中锚点到当前行的连续区间。
+        // 自己实现而不依赖 AppKit 原生行为，避免自定义 mouseDown 干扰导致失效。
+        if shiftHeld, clickedRow >= 0, let anchor = shiftAnchorRow {
+            let low = min(anchor, clickedRow)
+            let high = max(anchor, clickedRow)
+            selectRowIndexes(IndexSet(low...high), byExtendingSelection: false)
+            // Shift 点击不触发重命名
+        } else {
+            super.mouseDown(with: event)
+            if clickedRow >= 0 && !shiftHeld {
+                shiftAnchorRow = clickedRow
+            }
+        }
+
         guard clickedRow >= 0 else { return }
         if event.clickCount == 2 {
             onDoubleClickRow?(clickedRow)
-        } else if event.clickCount == 1 {
+        } else if event.clickCount == 1, !shiftHeld {
             onSingleClickRow?(clickedRow, wasSelected, point)
         }
     }
@@ -137,10 +215,19 @@ final class PaneTableView: NSTableView {
     }
 }
 
+/// 不拦截鼠标的图标/文字子视图：让拖拽事件穿透到 NSCollectionView，
+/// 否则 NSImageView / NSTextField 会吞掉 mouseDown/dragging 导致无法拖放。
+private final class IconPassthroughImageView: NSImageView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+private final class IconPassthroughTextField: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 final class IconCollectionViewItem: NSCollectionViewItem {
     private let tileView = NSView()
-    private let iconImageView = NSImageView()
-    private let nameLabel = NSTextField(labelWithString: "")
+    private let iconImageView = IconPassthroughImageView()
+    private let nameLabel = IconPassthroughTextField(labelWithString: "")
     private var iconSizeConstraint: NSLayoutConstraint!
     private var paneIndex: Int = 0
 
@@ -293,6 +380,7 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         containerView.frame = NSRect(x: 0, y: 0, width: 1280, height: 760)
         view = containerView
         containerView.pane = self
+        containerView.enableFileDrop()
     }
 
     override func viewDidLoad() {
@@ -637,6 +725,7 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         collectionView.collectionViewLayout = layout
         collectionView.dataSource = self
         collectionView.delegate = self
+        collectionView.pane = self
         collectionView.isSelectable = true
         collectionView.allowsMultipleSelection = true
         collectionView.allowsEmptySelection = true
@@ -866,6 +955,9 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
             }
         }
         displayedItems = result
+        // 列表内容变化后旧的 Shift 锚点已失效，重置避免跨目录误选
+        tableView.resetShiftAnchor()
+        collectionView.resetShiftAnchor()
         if viewMode == .list { tableView.reloadData() } else { collectionView.reloadData() }
         statusLabel.stringValue = statusText()
     }
@@ -1567,11 +1659,34 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     @objc func showInfo() {
-        guard let url = selectedURLs().first else { return }
-        let item = FileItem(url: url)
-        let date = item.modified.map { DateFormatterStore.medium.string(from: $0) } ?? "未知"
-        let message = "名称：\(item.displayName)\n位置：\(item.url.deletingLastPathComponent().path)\n类型：\(item.kind)\n大小：\(item.isDirectory ? "文件夹" : FileSizeFormatter.string(item.size))\n修改日期：\(date)"
-        Dialog.alert(title: "简介", message: message, window: view.window)
+        let urls = selectedURLs()
+        guard !urls.isEmpty else { return }
+        // 调用访达的「显示简介」（等价选中后按 ⌘I），多选时由访达显示“多个项目”的简介窗口
+        let aliases = urls.map { "(POSIX file \(Self.asAppleScriptString($0.path)) as alias)" }
+                          .joined(separator: ", ")
+        let target = urls.count == 1 ? aliases : "{\(aliases)}"
+        let source = "tell application \"Finder\"\n"
+                   + "  activate\n"
+                   + "  select \(target)\n"
+                   + "  open information window of (selection)\n"
+                   + "end tell"
+        var error: NSDictionary?
+        let script = NSAppleScript(source: source)
+        script?.executeAndReturnError(&error)
+        if error == nil { return }
+
+        // 访达脚本被拒（如自动化权限未授权）时：打开访达并选中文件，提示按 ⌘I
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
+        Dialog.alert(title: "显示简介",
+                     message: "已在新访达窗口中选中文件，请按 ⌘I 查看简介。",
+                     window: view.window)
+    }
+
+    /// 把路径转成 AppleScript 双引号字符串，转义反斜杠与双引号
+    private static func asAppleScriptString(_ path: String) -> String {
+        let escaped = path.replacingOccurrences(of: "\\", with: "\\\\")
+                          .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
     }
 
     @objc func toggleHiddenFiles() {
@@ -1713,10 +1828,141 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
                 add("显示简介", #selector(showInfo), enabled: hasSelection)
             case .refresh:
                 add("刷新", #selector(refresh), "r")
+            case .sevenZip:
+                // 压缩包右键显示解压组，其余显示压缩组；位置由偏好设置中的顺序决定
+                guard hasSelection else { break }
+                menu.addItem(.separator())
+                menu.addItem(sevenZipMenuItem(for: urls))
             }
         }
+
         sanitizeSeparators(in: menu)
         return menu
+    }
+
+    // MARK: - 7-Zip 右键菜单
+
+    private func sevenZipMenuItem(for urls: [URL]) -> NSMenuItem {
+        let item = NSMenuItem(title: "7-Zip", action: nil, keyEquivalent: "")
+        item.image = SevenZipIcon.archive
+        let sub = NSMenu()
+        let archives = urls.filter { SevenZip.isArchive($0) }
+
+        func addSub(_ title: String, _ action: Selector, _ payload: [URL], icon: NSImage? = nil) {
+            let subItem = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            subItem.target = self
+            subItem.representedObject = payload
+            if let icon { subItem.image = icon }
+            sub.addItem(subItem)
+        }
+
+        if !archives.isEmpty {
+            // 右键对象包含压缩包：解压相关操作
+            addSub("用 7-Zip 打开", #selector(zipOpenArchive(_:)), archives, icon: SevenZipIcon.view)
+            addSub("解压文件…", #selector(zipExtractFiles(_:)), archives, icon: SevenZipIcon.extract)
+            addSub("解压到 \"\(archives[0].deletingPathExtension().lastPathComponent)\"",
+                   #selector(zipExtractToFolder(_:)), archives, icon: SevenZipIcon.extractTo)
+            addSub("解压到当前文件夹", #selector(zipExtractHere(_:)), archives, icon: SevenZipIcon.extract)
+        } else {
+            // 普通文件/文件夹：压缩相关操作
+            addSub("添加到压缩文件…", #selector(zipAddToArchive(_:)), urls, icon: SevenZipIcon.add)
+            addSub("添加到 \"\(currentURL.lastPathComponent)\"",
+                   #selector(zipQuickAdd(_:)), urls, icon: SevenZipIcon.add)
+        }
+        item.submenu = sub
+        return item
+    }
+
+    private func zipURLs(from sender: Any?) -> [URL] {
+        (sender as? NSMenuItem)?.representedObject as? [URL] ?? []
+    }
+
+    @objc private func zipAddToArchive(_ sender: NSMenuItem) {
+        let urls = zipURLs(from: sender)
+        guard !urls.isEmpty else { return }
+        let panel = SevenZipCompressPanel(directory: currentURL, defaultBaseName: currentURL.lastPathComponent)
+        panel.onConfirm = { [weak self] archive, options in
+            guard let self else { return }
+            let result = SevenZip.compress(urls, to: archive, options: options)
+            if result.ok {
+                self.statusLabel.stringValue = "已创建压缩包：\(archive.lastPathComponent)"
+                self.refresh()
+            } else {
+                Dialog.alert(title: "压缩失败", message: result.stderr, window: self.view.window)
+            }
+        }
+        panel.run()
+    }
+
+    @objc private func zipQuickAdd(_ sender: NSMenuItem) {
+        let urls = zipURLs(from: sender)
+        guard !urls.isEmpty else { return }
+        var options = SevenZip.CompressOptions()
+        options.format = AppSettings.sevenZipFormat
+        options.level = AppSettings.sevenZipLevel
+        let archive = SevenZip.defaultArchiveURL(in: currentURL, ext: options.fileExtension)
+        let result = SevenZip.compress(urls, to: archive, options: options)
+        if result.ok {
+            statusLabel.stringValue = "已创建压缩包：\(archive.lastPathComponent)"
+            refresh()
+        } else {
+            Dialog.alert(title: "压缩失败", message: result.stderr, window: view.window)
+        }
+    }
+
+    @objc private func zipOpenArchive(_ sender: NSMenuItem) {
+        guard let archive = zipURLs(from: sender).first else { return }
+        let browser = ArchiveBrowserController(archive: archive)
+        browser.showWindow(nil)
+        browser.open { ok, message in
+            if !ok {
+                Dialog.alert(title: "打开压缩包失败", message: message)
+            }
+        }
+    }
+
+    @objc private func zipExtractFiles(_ sender: NSMenuItem) {
+        guard let archive = zipURLs(from: sender).first else { return }
+        let base = archive.deletingPathExtension().lastPathComponent
+        let panel = SevenZipExtractPanel(initialPath: archive.deletingLastPathComponent()
+            .appendingPathComponent(base).path)
+        panel.onConfirm = { [weak self] destination, password in
+            guard let self else { return }
+            try? FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            let result = SevenZip.extract(archive, to: destination, password: password)
+            if result.ok {
+                self.statusLabel.stringValue = "已解压到：\(destination.lastPathComponent)"
+                self.refresh()
+            } else {
+                Dialog.alert(title: "解压失败", message: result.stderr, window: self.view.window)
+            }
+        }
+        panel.run()
+    }
+
+    @objc private func zipExtractToFolder(_ sender: NSMenuItem) {
+        guard let archive = zipURLs(from: sender).first else { return }
+        let base = archive.deletingPathExtension().lastPathComponent
+        let destination = archive.deletingLastPathComponent().appendingPathComponent(base)
+        let result = SevenZip.extract(archive, to: destination)
+        if result.ok {
+            statusLabel.stringValue = "已解压到：\(base)"
+            refresh()
+        } else {
+            Dialog.alert(title: "解压失败", message: result.stderr, window: view.window)
+        }
+    }
+
+    @objc private func zipExtractHere(_ sender: NSMenuItem) {
+        guard let archive = zipURLs(from: sender).first else { return }
+        let destination = archive.deletingLastPathComponent()
+        let result = SevenZip.extract(archive, to: destination)
+        if result.ok {
+            statusLabel.stringValue = "已解压到当前文件夹"
+            refresh()
+        } else {
+            Dialog.alert(title: "解压失败", message: result.stderr, window: view.window)
+        }
     }
 
     // MARK: - NSTableView 数据源 / 代理
@@ -1800,11 +2046,42 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation operation: NSTableView.DropOperation) -> NSDragOperation {
+        if info.draggingPasteboard.string(forType: SevenZip.archiveDragMarker) == "1" { return .copy }
         return NSEvent.modifierFlags.contains(.option) ? .copy : .move
     }
 
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
         return performDrop(info: info, row: row)
+    }
+
+    /// 整个窗格级别的拖放校验（用于容器视图接收非表格区域的拖放）
+    func validateExternalDrop(_ info: NSDraggingInfo) -> NSDragOperation {
+        if info.draggingPasteboard.string(forType: SevenZip.archiveDragMarker) == "1" { return .copy }
+        return NSEvent.modifierFlags.contains(.option) ? .copy : .move
+    }
+
+    /// 供图标视图判断是否落在文件夹 item 上
+    func urlForDisplayedItem(at index: Int) -> URL? {
+        guard index >= 0, index < displayedItems.count else { return nil }
+        return displayedItems[index].url
+    }
+
+    /// 整个窗格级别的拖放处理：落到当前目录
+    func handleExternalDrop(_ info: NSDraggingInfo) -> Bool {
+        handleExternalDrop(info, into: currentURL)
+    }
+
+    /// 整个窗格级别的拖放处理：落到指定目录（图标视图落在文件夹上时传入该文件夹）
+    func handleExternalDrop(_ info: NSDraggingInfo, into destination: URL) -> Bool {
+        let pasteboard = info.draggingPasteboard
+        let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL]) ?? []
+        guard !urls.isEmpty else { return false }
+        let fromArchive = pasteboard.string(forType: SevenZip.archiveDragMarker) == "1"
+        let results = FileOperations.copyItems(urls, into: destination,
+                                               move: !fromArchive && !NSEvent.modifierFlags.contains(.option))
+        refresh()
+        results.first.map { select(url: $0) }
+        return !results.isEmpty
     }
 
     private func performDrop(info: NSDraggingInfo, row: Int) -> Bool {
@@ -1815,7 +2092,9 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         if row >= 0, row < displayedItems.count, displayedItems[row].isDirectory {
             destination = displayedItems[row].url
         }
-        let moving = !NSEvent.modifierFlags.contains(.option)
+        // 从压缩包浏览窗口拖出的条目来自临时目录：一律复制，不能“移动”掉，否则无法继续拖放。
+        let fromArchive = pasteboard.string(forType: SevenZip.archiveDragMarker) == "1"
+        let moving = !fromArchive && !NSEvent.modifierFlags.contains(.option)
         let results = FileOperations.copyItems(urls, into: destination, move: moving)
         refresh()
         results.first.map { select(url: $0) }
@@ -1869,7 +2148,9 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         if indexPath.item < displayedItems.count, displayedItems[indexPath.item].isDirectory {
             destination = displayedItems[indexPath.item].url
         }
-        let results = FileOperations.copyItems(urls, into: destination, move: !NSEvent.modifierFlags.contains(.option))
+        let fromArchive = draggingInfo.draggingPasteboard.string(forType: SevenZip.archiveDragMarker) == "1"
+        let results = FileOperations.copyItems(urls, into: destination,
+                                               move: !fromArchive && !NSEvent.modifierFlags.contains(.option))
         refresh()
         results.first.map { select(url: $0) }
         return !results.isEmpty
@@ -1908,6 +2189,7 @@ private extension NSMenu {
 
 extension PaneViewController {
     func collectionView(_ collectionView: NSCollectionView, validateDrop draggingInfo: NSDraggingInfo, proposedIndexPath proposedDropIndexPath: AutoreleasingUnsafeMutablePointer<IndexPath>, dropOperation proposedDropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>) -> NSDragOperation {
+        if draggingInfo.draggingPasteboard.string(forType: SevenZip.archiveDragMarker) == "1" { return .copy }
         return NSEvent.modifierFlags.contains(.option) ? .copy : .move
     }
 }

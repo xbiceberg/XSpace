@@ -11,6 +11,10 @@ swiftc -O "$ROOT"/Sources/*.swift -o "$APP/Contents/MacOS/XSpace"
 cp "$ROOT/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Assets/XSpace.icns" "$APP/Contents/Resources/XSpace.icns"
 cp "$ROOT/Assets/default-wallpaper.jpg" "$APP/Contents/Resources/default-wallpaper.jpg"
+cp "$ROOT/Resources/7zz" "$APP/Contents/Resources/7zz"
+chmod +x "$APP/Contents/Resources/7zz"
+mkdir -p "$APP/Contents/Resources/sevenzip"
+cp "$ROOT"/Assets/sevenzip/*.png "$APP/Contents/Resources/sevenzip/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true

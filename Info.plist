@@ -19,9 +19,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.2.7</string>
+	<string>1.3.0</string>
 	<key>CFBundleVersion</key>
-	<string>1.2.7</string>
+	<string>1.3.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>NSHighResolutionCapable</key>
@@ -32,6 +32,49 @@
         <string>en</string>
     </array>
     <key>NSHumanReadableDescription</key>
-    <string>三窗格 macOS 文件管理器</string>
+    <string>三窗格 macOS 文件管理器，内置 7-Zip 归档浏览与压缩/解压</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>归档文件</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>org.7-zip.7-zip-archive</string>
+                <string>public.zip-archive</string>
+                <string>com.rarlab.rar-archive</string>
+                <string>public.tar-archive</string>
+                <string>org.gnu.gnu-zip-archive</string>
+                <string>org.gnu.gnu-zip-tar-archive</string>
+                <string>public.bzip2-archive</string>
+                <string>public.tar-bzip2-archive</string>
+                <string>org.tukaani.xz-archive</string>
+                <string>org.tukaani.tar-xz-archive</string>
+                <string>com.microsoft.cab</string>
+                <string>public.z-archive</string>
+                <string>public.cpio-archive</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>其他归档文件</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>zst</string>
+                <string>arj</string>
+                <string>lzh</string>
+                <string>lha</string>
+                <string>wim</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

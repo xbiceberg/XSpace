@@ -115,6 +115,8 @@ enum ContextMenuItemID: String, CaseIterable {
     case separatorBeforeRefresh
     case copyPath
     case revealInFinder
+    /// 7-Zip 子菜单（压缩包显示解压组，其余显示压缩组）
+    case sevenZip
 
     var title: String {
         switch self {
@@ -137,6 +139,7 @@ enum ContextMenuItemID: String, CaseIterable {
         case .revealInFinder: return "在访达中显示"
         case .showInfo: return "显示简介"
         case .refresh: return "刷新"
+        case .sevenZip: return "7-Zip"
         }
     }
 
@@ -242,6 +245,9 @@ enum AppSettings {
     private static let contextMenuItemsKey = "qspacelite.contextMenuItems"
     private static let paneLayoutKey = "qspacelite.paneLayout"
     private static let contextMenuMigratedKey = "qspacelite.contextMenuMigratedNewWindow"
+    private static let contextMenuMigratedSevenZipKey = "qspacelite.contextMenuMigratedSevenZip"
+    private static let sevenZipFormatKey = "qspacelite.sevenZipFormat"
+    private static let sevenZipLevelKey = "qspacelite.sevenZipLevel"
 
     static var defaultPaneURLs: [URL] {
         let fm = FileManager.default
@@ -621,13 +627,18 @@ enum AppSettings {
 
     // MARK: - 右键菜单自定义
 
-    /// 默认右键菜单：严格按截图顺序，未包含「在新窗格中打开 / 计算哈希值 / 拷贝路径 / 在访达中显示」。
+    /// 默认右键菜单顺序（2026-11-25 按用户设置页截图调整）：
+    /// 打开 / 始终以此方式打开 / 新窗口打开 / 分割线 /
+    /// 重命名 / 剪切 / 复制 / 粘贴到此处 / 分割线 /
+    /// 移到废纸篓 / 直接删除 / 在终端打开 / 7-Zip / 分割线 /
+    /// 新建文件夹 / 显示简介 / 刷新
+    /// 未包含「在新窗格中打开 / 计算哈希值 / 拷贝路径 / 在访达中显示」。
     /// 注意：分隔符只关心位置，rawValue 沿用旧值以兼容用户已保存的设置。
     static var defaultContextMenuItems: [ContextMenuItemID] {
-        [.open, .openAlways, .openInNewWindow, .openInTerminal, .separatorAfterOpen,
+        [.open, .openAlways, .openInNewWindow, .separatorAfterOpen,
          .rename, .cut, .copy, .paste, .separatorAfterHash,
-         .trash, .deletePermanently, .separatorAfterRename, .showInfo,
-         .newFolder, .refresh]
+         .trash, .deletePermanently, .openInTerminal, .sevenZip, .separatorAfterRename,
+         .newFolder, .showInfo, .refresh]
     }
 
     /// 当前启用的右键菜单项（含顺序）；未配置时使用默认项
@@ -647,6 +658,14 @@ enum AppSettings {
                 }
                 defaults.set(true, forKey: contextMenuMigratedKey)
             }
+            // 一次性迁移：7-Zip 现在是可自定义的菜单项，老配置补到末尾（保持原先固定在末尾的效果）
+            if !defaults.bool(forKey: contextMenuMigratedSevenZipKey) {
+                if !items.contains(.sevenZip) {
+                    items.append(.sevenZip)
+                    defaults.set(items.map(\.rawValue), forKey: contextMenuItemsKey)
+                }
+                defaults.set(true, forKey: contextMenuMigratedSevenZipKey)
+            }
             return items
         }
         set { defaults.set(newValue.map(\.rawValue), forKey: contextMenuItemsKey) }
@@ -654,6 +673,26 @@ enum AppSettings {
 
     static func resetContextMenuItems() {
         defaults.removeObject(forKey: contextMenuItemsKey)
+    }
+
+    // MARK: - 7-ZIP 设置
+
+    /// 默认压缩格式：7z / zip / tar
+    static var sevenZipFormat: String {
+        get {
+            let value = defaults.string(forKey: sevenZipFormatKey)?.lowercased() ?? "7z"
+            return ["7z", "zip", "tar"].contains(value) ? value : "7z"
+        }
+        set { defaults.set(newValue.lowercased(), forKey: sevenZipFormatKey) }
+    }
+
+    /// 默认压缩级别：0~9，默认 5（标准）
+    static var sevenZipLevel: Int {
+        get {
+            guard defaults.object(forKey: sevenZipLevelKey) != nil else { return 5 }
+            return min(9, max(0, defaults.integer(forKey: sevenZipLevelKey)))
+        }
+        set { defaults.set(min(9, max(0, newValue)), forKey: sevenZipLevelKey) }
     }
 }
 

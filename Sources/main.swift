@@ -668,9 +668,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var allowTermination = false
     /// 系统正在关机/重启：此时必须放行退出，否则 macOS 会判定本 App 阻止关机
     private var isSystemShuttingDown = false
+    /// Finder 双击压缩包时，openFile / openFiles 可能都回调；用短时间窗去重，避免重复开窗。
+    private var lastOpenedArchive: (path: String, at: Date)?
 
     func application(_ application: NSApplication, shouldRestoreApplicationState coder: NSCoder) -> Bool {
         false
+    }
+
+    // MARK: - Finder 双击压缩包：交给内置 7-Zip 浏览窗口
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        urls.forEach { openArchiveFromFinder($0) }
+    }
+
+    func application(_ application: NSApplication, openFile filename: String) -> Bool {
+        openArchiveFromFinder(URL(fileURLWithPath: filename))
+        return true
+    }
+
+    private func openArchiveFromFinder(_ url: URL) {
+        guard SevenZip.isArchive(url) else { return }
+        let now = Date()
+        if let last = lastOpenedArchive, last.path == url.path,
+           now.timeIntervalSince(last.at) < 3 { return }
+        lastOpenedArchive = (url.path, now)
+
+        let browser = ArchiveBrowserController(archive: url)
+        browser.open { ok, message in
+            guard !ok else { return }
+            let alert = NSAlert()
+            alert.messageText = "无法打开压缩包"
+            alert.informativeText = message.isEmpty ? "7-Zip 无法读取该文件。" : message
+            alert.alertStyle = .warning
+            alert.icon = SevenZipIcon.archive
+            alert.runModal()
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -1354,7 +1386,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     @objc func showAbout() {
         Dialog.alert(
             title: "XSpace",
-            message: "一个仿 QSpace Pro 的 macOS 文件管理器。\n窗口支持 1~4 个窗格，可在偏好设置的「布局」里切换。\n支持独立目录、Windows 风格前进后退、鼠标侧键、拖拽和快捷键。\n版本 \(Self.appVersion)"
+            message: "一个 Mac 上轻量级别的多窗口文件管理器。\n集成了轻量级别的截图以及 7-ZIP 功能。\n版本 \(Self.appVersion)"
         )
     }
 
@@ -1392,6 +1424,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         tabs.addTabViewItem(appearanceTabItem())
         tabs.addTabViewItem(wallpaperTabItem())
         tabs.addTabViewItem(contextMenuTabItem())
+        tabs.addTabViewItem(sevenZipTabItem())
         window.contentView = tabs
 
         preferencesTabs = tabs
@@ -1410,6 +1443,118 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         item.label = "右键菜单"
         item.view = view
         return item
+    }
+
+    // MARK: - 7-ZIP 设置页
+
+    private func sevenZipTabItem() -> NSTabViewItem {
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: 520))
+        let titleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
+
+        // 集成状态卡片
+        view.addSubview(SettingCardView(frame: NSRect(x: 16, y: 386, width: 528, height: 114)))
+        let statusTitle = makeLabel("7-ZIP", frame: NSRect(x: 34, y: 472, width: 76, height: 20), alignment: .right)
+        statusTitle.font = titleFont
+        view.addSubview(statusTitle)
+        let versionText = makeLabel("已集成 7-Zip 25.01（arm64）", frame: NSRect(x: 118, y: 472, width: 400, height: 20))
+        versionText.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        view.addSubview(versionText)
+        let desc1 = makeLabel("支持创建 7z / ZIP / TAR；可解压 RAR / RAR5 / ISO / CAB 等常见格式。",
+                              frame: NSRect(x: 118, y: 448, width: 410, height: 20))
+        desc1.font = NSFont.systemFont(ofSize: 11)
+        desc1.textColor = .secondaryLabelColor
+        view.addSubview(desc1)
+        let desc2 = makeLabel("双击压缩包会用内置浏览窗口打开；右键菜单提供压缩与解压功能。",
+                              frame: NSRect(x: 118, y: 426, width: 410, height: 20))
+        desc2.font = NSFont.systemFont(ofSize: 11)
+        desc2.textColor = .secondaryLabelColor
+        view.addSubview(desc2)
+        let note = makeLabel("注：RAR 为专有格式，开源版仅支持解压，不支持创建。",
+                             frame: NSRect(x: 118, y: 402, width: 410, height: 20))
+        note.font = NSFont.systemFont(ofSize: 10)
+        note.textColor = .tertiaryLabelColor
+        view.addSubview(note)
+
+        // 默认压缩参数卡片
+        view.addSubview(SettingCardView(frame: NSRect(x: 16, y: 246, width: 528, height: 124)))
+        let defaultTitle = makeLabel("默认参数", frame: NSRect(x: 34, y: 342, width: 76, height: 20), alignment: .right)
+        defaultTitle.font = titleFont
+        view.addSubview(defaultTitle)
+
+        view.addSubview(makeLabel("压缩格式", frame: NSRect(x: 118, y: 342, width: 70, height: 20)))
+        let format = NSPopUpButton(frame: NSRect(x: 190, y: 339, width: 150, height: 24), pullsDown: false)
+        format.addItems(withTitles: ["7z（推荐）", "ZIP", "TAR"])
+        format.selectItem(at: ["7z", "zip", "tar"].firstIndex(of: AppSettings.sevenZipFormat) ?? 0)
+        format.action = #selector(changeSevenZipFormat(_:))
+        format.target = self
+        view.addSubview(format)
+
+        view.addSubview(makeLabel("压缩级别", frame: NSRect(x: 118, y: 306, width: 70, height: 20)))
+        let level = NSPopUpButton(frame: NSRect(x: 190, y: 303, width: 150, height: 24), pullsDown: false)
+        level.addItems(withTitles: ["0 - 存储", "1 - 最快", "3 - 快速", "5 - 标准", "7 - 最大", "9 - 极限"])
+        level.selectItem(at: [0, 1, 3, 5, 7, 9].firstIndex(of: AppSettings.sevenZipLevel) ?? 3)
+        level.action = #selector(changeSevenZipLevel(_:))
+        level.target = self
+        view.addSubview(level)
+        let hint = makeLabel("用于「默认参数压缩」与压缩窗口的初始选择；RAR 需使用其他工具创建。",
+                             frame: NSRect(x: 34, y: 264, width: 490, height: 20))
+        hint.font = NSFont.systemFont(ofSize: 10)
+        hint.textColor = .tertiaryLabelColor
+        view.addSubview(hint)
+
+        // 文件关联卡片
+        view.addSubview(SettingCardView(frame: NSRect(x: 16, y: 138, width: 528, height: 92)))
+        let assocTitle = makeLabel("文件关联", frame: NSRect(x: 34, y: 202, width: 76, height: 20), alignment: .right)
+        assocTitle.font = titleFont
+        view.addSubview(assocTitle)
+        let assocDesc = makeLabel("将 XSpace 设为常见压缩格式的默认打开方式，双击即可浏览。",
+                                  frame: NSRect(x: 118, y: 202, width: 400, height: 20))
+        assocDesc.font = NSFont.systemFont(ofSize: 11)
+        assocDesc.textColor = .secondaryLabelColor
+        view.addSubview(assocDesc)
+        let setDefault = NSButton(title: "设为默认压缩软件", target: self, action: #selector(setAsDefaultArchiveApp))
+        setDefault.frame = NSRect(x: 118, y: 166, width: 160, height: 28)
+        setDefault.bezelStyle = .rounded
+        view.addSubview(setDefault)
+
+        let item = NSTabViewItem(identifier: "sevenZip")
+        item.label = "7-ZIP"
+        item.view = view
+        return item
+    }
+
+    @objc private func changeSevenZipFormat(_ sender: NSPopUpButton) {
+        let formats = ["7z", "zip", "tar"]
+        AppSettings.sevenZipFormat = formats[min(max(sender.indexOfSelectedItem, 0), formats.count - 1)]
+    }
+
+    @objc private func changeSevenZipLevel(_ sender: NSPopUpButton) {
+        let levels = [0, 1, 3, 5, 7, 9]
+        AppSettings.sevenZipLevel = levels[min(max(sender.indexOfSelectedItem, 0), levels.count - 1)]
+    }
+
+    @objc private func setAsDefaultArchiveApp() {
+        let appURL = Bundle.main.bundleURL
+        let identifiers = [
+            "org.7-zip.7-zip-archive", "public.zip-archive", "com.rarlab.rar-archive",
+            "public.tar-archive", "org.gnu.gnu-zip-archive", "org.gnu.gnu-zip-tar-archive",
+            "public.bzip2-archive", "public.tar-bzip2-archive", "org.tukaani.xz-archive",
+            "org.tukaani.tar-xz-archive", "com.microsoft.cab", "public.z-archive",
+            "public.cpio-archive"
+        ]
+        var success = 0
+        for id in identifiers {
+            guard let type = UTType(id) else { continue }
+            NSWorkspace.shared.setDefaultApplication(at: appURL, toOpen: type)
+            success += 1
+        }
+        let alert = NSAlert()
+        alert.messageText = success > 0 ? "已设置默认应用" : "设置失败"
+        alert.informativeText = success > 0
+            ? "已将 XSpace 设为 \(success) 种压缩格式的默认打开方式。"
+            : "系统拒绝了设置请求，你也可以在访达中右键压缩包 →「打开方式」手动选择 XSpace。"
+        alert.alertStyle = success > 0 ? .informational : .warning
+        alert.runModal()
     }
 
     // MARK: - 快捷键设置（所有可录制快捷键集中在此页）
