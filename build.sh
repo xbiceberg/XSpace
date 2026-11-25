@@ -15,6 +15,8 @@ cp "$ROOT/Resources/7zz" "$APP/Contents/Resources/7zz"
 chmod +x "$APP/Contents/Resources/7zz"
 mkdir -p "$APP/Contents/Resources/sevenzip"
 cp "$ROOT"/Assets/sevenzip/*.png "$APP/Contents/Resources/sevenzip/"
+mkdir -p "$APP/Contents/Resources/FileIcons"
+cp "$ROOT"/Assets/FileIcons/*.png "$APP/Contents/Resources/FileIcons/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true

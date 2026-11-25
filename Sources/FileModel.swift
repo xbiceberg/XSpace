@@ -72,6 +72,11 @@ enum IconCache {
     private static let thumbnailLock = NSLock()
     // NSWorkspace / ImageIO 的图标查找并非线程安全，串行化缓存未命中的创建过程
     private static let iconLock = NSLock()
+    private static let iconsChangedObserver: NSObjectProtocol = NotificationCenter.default.addObserver(
+        forName: .xspaceFileIconsChanged, object: nil, queue: .main
+    ) { _ in
+        IconCache.clearExtensionIcons()
+    }
     private static let imageExtensions: Set<String> = [
         "jpg", "jpeg", "png", "gif", "heic", "heif", "tiff", "tif", "bmp", "webp"
     ]
@@ -131,6 +136,12 @@ enum IconCache {
         return image
     }
 
+    static func clearExtensionIcons() {
+        iconLock.lock()
+        extensionIcons.removeAllObjects()
+        iconLock.unlock()
+    }
+
     static func icon(for url: URL, isDirectory: Bool) -> NSImage {
         iconLock.lock()
         defer { iconLock.unlock() }
@@ -147,7 +158,9 @@ enum IconCache {
         if ext.isEmpty { return genericIcon }
         let key = ext as NSString
         if let cached = extensionIcons.object(forKey: key) { return cached }
-        let image = UTType(filenameExtension: ext).map { NSWorkspace.shared.icon(for: $0) } ?? genericIcon
+        let image = FileIconResolver.image(for: ext)
+            ?? UTType(filenameExtension: ext).map { NSWorkspace.shared.icon(for: $0) }
+            ?? genericIcon
         extensionIcons.setObject(image, forKey: key)
         return image
     }

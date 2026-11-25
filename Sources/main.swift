@@ -1425,6 +1425,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         tabs.addTabViewItem(wallpaperTabItem())
         tabs.addTabViewItem(contextMenuTabItem())
         tabs.addTabViewItem(sevenZipTabItem())
+        tabs.addTabViewItem(iconsTabItem())
         window.contentView = tabs
 
         preferencesTabs = tabs
@@ -1441,6 +1442,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let view = ContextMenuSettingsView(frame: NSRect(x: 0, y: 0, width: 560, height: 520))
         let item = NSTabViewItem(identifier: "contextMenu")
         item.label = "右键菜单"
+        item.view = view
+        return item
+    }
+
+    private func iconsTabItem() -> NSTabViewItem {
+        let view = IconSettingsView(frame: NSRect(x: 0, y: 0, width: 560, height: 520))
+        let item = NSTabViewItem(identifier: "fileIcons")
+        item.label = "图标"
         item.view = view
         return item
     }

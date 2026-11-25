@@ -248,6 +248,8 @@ enum AppSettings {
     private static let contextMenuMigratedSevenZipKey = "qspacelite.contextMenuMigratedSevenZip"
     private static let sevenZipFormatKey = "qspacelite.sevenZipFormat"
     private static let sevenZipLevelKey = "qspacelite.sevenZipLevel"
+    private static let fileIconOverridesKey = "qspacelite.fileIconOverrides"
+    private static let customIconExtensionsKey = "qspacelite.customIconExtensions"
 
     static var defaultPaneURLs: [URL] {
         let fm = FileManager.default
@@ -694,6 +696,54 @@ enum AppSettings {
         }
         set { defaults.set(min(9, max(0, newValue)), forKey: sevenZipLevelKey) }
     }
+
+    // MARK: - 文件类型图标
+
+    /// 扩展名 → 用户选择的图标文件路径
+    static var fileIconOverrides: [String: String] {
+        get { defaults.dictionary(forKey: fileIconOverridesKey) as? [String: String] ?? [:] }
+        set { defaults.set(newValue, forKey: fileIconOverridesKey) }
+    }
+
+    /// 自定义分类中的扩展名（保持用户添加顺序）
+    static var customIconExtensions: [String] {
+        get { defaults.stringArray(forKey: customIconExtensionsKey) ?? [] }
+        set { defaults.set(newValue, forKey: customIconExtensionsKey) }
+    }
+
+    static func setFileIconOverride(_ ext: String, path: String?) {
+        let key = ext.lowercased()
+        var values = fileIconOverrides
+        if let path {
+            values[key] = path
+        } else {
+            values.removeValue(forKey: key)
+        }
+        fileIconOverrides = values
+        NotificationCenter.default.post(name: .xspaceFileIconsChanged, object: nil)
+    }
+
+    static func addCustomIconExtension(_ ext: String) {
+        let key = ext.lowercased()
+        var values = customIconExtensions
+        if !values.contains(key) { values.append(key) }
+        customIconExtensions = values
+    }
+
+    static func removeCustomIconExtension(_ ext: String) {
+        let key = ext.lowercased()
+        customIconExtensions = customIconExtensions.filter { $0 != key }
+        var overrides = fileIconOverrides
+        overrides.removeValue(forKey: key)
+        fileIconOverrides = overrides
+        NotificationCenter.default.post(name: .xspaceFileIconsChanged, object: nil)
+    }
+
+    static func resetFileIcons() {
+        defaults.removeObject(forKey: fileIconOverridesKey)
+        defaults.removeObject(forKey: customIconExtensionsKey)
+        NotificationCenter.default.post(name: .xspaceFileIconsChanged, object: nil)
+    }
 }
 
 private extension Array {
@@ -710,4 +760,5 @@ extension Notification.Name {
     static let xspaceLayoutChanged = Notification.Name("xspace.layoutChanged")
     static let xspaceUndoStackChanged = Notification.Name("xspace.undoStackChanged")
     static let xspaceUndoSettingsChanged = Notification.Name("xspace.undoSettingsChanged")
+    static let xspaceFileIconsChanged = Notification.Name("xspace.fileIconsChanged")
 }
