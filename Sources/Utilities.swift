@@ -1460,6 +1460,18 @@ enum FileOperations {
     }
 }
 
+extension URL {
+    /// Finder 兼容的拖放项：除 public.file-url 外，同时写入旧式 NSFilenamesPboardType
+    /// 和路径文本，便于只识别这些类型的第三方播放器接收文件。
+    var dragPasteboardItem: NSPasteboardItem {
+        let item = NSPasteboardItem()
+        item.setString(absoluteString, forType: .fileURL)
+        item.setPropertyList([path], forType: NSPasteboard.PasteboardType(rawValue: "NSFilenamesPboardType"))
+        item.setString(path, forType: .string)
+        return item
+    }
+}
+
 extension Array where Element == URL {
-    var pasteboardObjects: [NSPasteboardWriting] { map { $0 as NSURL } }
+    var pasteboardObjects: [NSPasteboardWriting] { map { $0.dragPasteboardItem } }
 }

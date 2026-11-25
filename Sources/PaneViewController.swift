@@ -72,6 +72,12 @@ final class IconCollectionView: NSCollectionView {
     /// Windows 风格 Shift 连续多选的锚点（上一次普通点击的 item）
     private var shiftAnchorItem: Int?
 
+    /// 拖到本应用之外时同时允许复制与移动；播放器通常只接受 .copy
+    override func draggingSession(_ session: NSDraggingSession,
+                                  sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        return [.copy, .move]
+    }
+
     /// 目录/排序变化时重置 Shift 锚点
     func resetShiftAnchor() { shiftAnchorItem = nil }
 
@@ -167,6 +173,12 @@ final class PaneTableView: NSTableView {
     var onContextMenu: ((NSEvent) -> Void)?
     /// Windows 风格 Shift 连续多选的锚点（上一次普通点击的行）
     private var shiftAnchorRow: Int?
+
+    /// 拖到本应用之外时同时允许复制与移动；播放器通常只接受 .copy
+    override func draggingSession(_ session: NSDraggingSession,
+                                  sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        return [.copy, .move]
+    }
 
     /// 目录/排序变化时重置 Shift 锚点
     func resetShiftAnchor() { shiftAnchorRow = nil }
@@ -2016,7 +2028,7 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
         guard row < displayedItems.count else { return nil }
-        return displayedItems[row].url as NSURL
+        return displayedItems[row].url.dragPasteboardItem
     }
 
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation operation: NSTableView.DropOperation) -> NSDragOperation {
@@ -2112,7 +2124,7 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
 
     func collectionView(_ collectionView: NSCollectionView, pasteboardWriterForItemAt indexPath: IndexPath) -> NSPasteboardWriting? {
         guard indexPath.item < displayedItems.count else { return nil }
-        return displayedItems[indexPath.item].url as NSURL
+        return displayedItems[indexPath.item].url.dragPasteboardItem
     }
 
     func collectionView(_ collectionView: NSCollectionView, acceptDrop draggingInfo: NSDraggingInfo, indexPath: IndexPath, dropOperation: NSCollectionView.DropOperation) -> Bool {
