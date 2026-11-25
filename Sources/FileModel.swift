@@ -68,6 +68,8 @@ enum IconCache {
     // 普通 Swift Dictionary 并发写会导致 _NativeDictionary.setValue 崩溃。
     private static let extensionIcons = NSCache<NSString, NSImage>()
     private static let appIcons = NSCache<NSString, NSImage>()
+    /// 每个 .ico 文件的内容不同，按文件路径缓存其真实图标
+    private static let fileIconCache = NSCache<NSString, NSImage>()
     private static let thumbnailCache = NSCache<NSString, NSImage>()
     private static let thumbnailLock = NSLock()
     // NSWorkspace / ImageIO 的图标查找并非线程安全，串行化缓存未命中的创建过程
@@ -156,6 +158,17 @@ enum IconCache {
         }
         if isDirectory { return folderIcon }
         if ext.isEmpty { return genericIcon }
+        // .ico 文件直接显示文件自身包含的图标（列表与图标视图均可见）
+        if ext == "ico" {
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate?.timeIntervalSince1970 ?? 0
+            let fileKey = "\(url.path)|\(Int(modified))" as NSString
+            if let cached = fileIconCache.object(forKey: fileKey) { return cached }
+            if let image = NSImage(contentsOf: url) {
+                fileIconCache.setObject(image, forKey: fileKey)
+                return image
+            }
+        }
         let key = ext as NSString
         if let cached = extensionIcons.object(forKey: key) { return cached }
         let image = FileIconResolver.image(for: ext)

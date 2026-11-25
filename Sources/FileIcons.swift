@@ -26,7 +26,7 @@ enum FileIconCatalog {
 
     /// 图标库「其他」目录中的扩展名，放在设置页「自定义」分类里
     static let otherExtensions: [String] = [
-        "bmp", "doc", "docx", "ppt", "pptx", "txt", "xls", "xlsx"
+        "bmp", "doc", "docx", "dmg", "pdf", "ppt", "pptx", "txt", "xls", "xlsx"
     ]
 
     /// 自定义分类中内置图标的数量，用于区分「还原」和「删除」操作
