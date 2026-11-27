@@ -248,6 +248,11 @@ private final class IconPassthroughImageView: NSImageView {
 private final class IconPassthroughTextField: NSTextField {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
+/// 选中态灰底等纯装饰视图：让点击穿透到 IconTileView，
+/// 否则它会成为 hit-test 目标并吞掉未激活窗口的第一次点击。
+private final class IconPassthroughView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
 
 /// 图标格子的底层视图：鼠标第一次落在未激活窗口里也直接接收事件，
 /// 让“点击文件”在激活窗口的同时完成选中，而不是只激活窗口。
@@ -295,7 +300,7 @@ private let renameFieldPadding: CGFloat = 6
 final class IconCollectionViewItem: NSCollectionViewItem {
     private let tileView = IconTileView()
     /// 选中态灰色背景：底边贴着文件名标签，不与整行格子等高
-    private let selectionBackgroundView = NSView()
+    private let selectionBackgroundView = IconPassthroughView()
     private let iconImageView = IconPassthroughImageView()
     private let nameLabel = IconPassthroughTextField(labelWithString: "")
     private var iconSizeConstraint: NSLayoutConstraint!
