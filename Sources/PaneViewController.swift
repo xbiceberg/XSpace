@@ -236,11 +236,44 @@ private final class IconPassthroughTextField: NSTextField {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
+/// 图标格子宽度：只比图标本身宽一点，避免放大图标后图标之间出现大片空白。
+/// 文件名区域靠折行（2~4 行）容纳长名字，而不是把格子拉宽。
+private func iconCellWidth(iconSize: CGFloat) -> CGFloat { iconSize + 20 }
+
+/// 计算文件名在给定宽度下需要几行，最少两行、最多四行（与 Windows 资源管理器一致）
+private func iconNameLineCount(_ name: String, width: CGFloat, font: NSFont) -> Int {
+    let style = NSMutableParagraphStyle()
+    style.lineBreakMode = .byWordWrapping
+    let rect = (name as NSString).boundingRect(
+        with: NSSize(width: max(1, width), height: .greatestFiniteMagnitude),
+        options: [.usesLineFragmentOrigin, .usesFontLeading],
+        attributes: [.font: font, .paragraphStyle: style], context: nil)
+    let lineHeight = ceil(font.pointSize * 1.32)
+    return min(4, max(2, Int(ceil(rect.height / lineHeight))))
+}
+
+/// 重命名框的高度按当前文本实际折行数计算（至少两行，不限制最多行数，保证长名字完整显示）
+private func renameTextHeight(_ name: String, width: CGFloat, font: NSFont) -> CGFloat {
+    let style = NSMutableParagraphStyle()
+    style.lineBreakMode = .byWordWrapping
+    let rect = (name as NSString).boundingRect(
+        with: NSSize(width: max(1, width), height: .greatestFiniteMagnitude),
+        options: [.usesLineFragmentOrigin, .usesFontLeading],
+        attributes: [.font: font, .paragraphStyle: style], context: nil)
+    let lineHeight = ceil(font.pointSize * 1.32)
+    return lineHeight * CGFloat(max(2, Int(ceil(rect.height / lineHeight))))
+}
+
+/// 输入框四边留出的最小内边距（只包住文字，不再撑出空白）
+private let renameFieldPadding: CGFloat = 6
+
 final class IconCollectionViewItem: NSCollectionViewItem {
     private let tileView = NSView()
     private let iconImageView = IconPassthroughImageView()
     private let nameLabel = IconPassthroughTextField(labelWithString: "")
     private var iconSizeConstraint: NSLayoutConstraint!
+    /// 文件名区域高度随名字长度在 2~4 行之间变化
+    private var nameHeightConstraint: NSLayoutConstraint!
     private var paneIndex: Int = 0
 
     override func loadView() {
@@ -252,8 +285,9 @@ final class IconCollectionViewItem: NSCollectionViewItem {
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
         nameLabel.font = NSFont.systemFont(ofSize: AppSettings.textSize(for: paneIndex))
         nameLabel.alignment = .center
-        nameLabel.lineBreakMode = .byTruncatingTail
-        nameLabel.maximumNumberOfLines = 2
+        // Windows/Finder 风格：默认两行高度，长名字最多四行，按字符折行
+        nameLabel.lineBreakMode = .byWordWrapping
+        nameLabel.maximumNumberOfLines = 4
         nameLabel.cell?.wraps = true
         nameLabel.cell?.isScrollable = false
         // Finder 风格：选中态用带圆角的图层背景，而不是 NSTextField 的直角绘制背景
@@ -266,6 +300,7 @@ final class IconCollectionViewItem: NSCollectionViewItem {
         tileView.addSubview(iconImageView)
         tileView.addSubview(nameLabel)
         iconSizeConstraint = iconImageView.widthAnchor.constraint(equalToConstant: AppSettings.iconSize(for: paneIndex))
+        nameHeightConstraint = nameLabel.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             iconImageView.topAnchor.constraint(equalTo: tileView.topAnchor, constant: 6),
             iconImageView.centerXAnchor.constraint(equalTo: tileView.centerXAnchor),
@@ -273,7 +308,8 @@ final class IconCollectionViewItem: NSCollectionViewItem {
             iconImageView.heightAnchor.constraint(equalTo: iconImageView.widthAnchor),
             nameLabel.topAnchor.constraint(equalTo: iconImageView.bottomAnchor, constant: 4),
             nameLabel.leadingAnchor.constraint(equalTo: tileView.leadingAnchor, constant: 2),
-            nameLabel.trailingAnchor.constraint(equalTo: tileView.trailingAnchor, constant: -2)
+            nameLabel.trailingAnchor.constraint(equalTo: tileView.trailingAnchor, constant: -2),
+            nameHeightConstraint
         ])
     }
 
@@ -283,9 +319,17 @@ final class IconCollectionViewItem: NSCollectionViewItem {
 
     func configure(with item: FileItem, paneIndex: Int) {
         self.paneIndex = paneIndex
-        iconSizeConstraint.constant = AppSettings.iconSize(for: paneIndex)
+        let iconSize = AppSettings.iconSize(for: paneIndex)
+        iconSizeConstraint.constant = iconSize
         let textSize = AppSettings.textSize(for: paneIndex)
-        nameLabel.font = NSFont.systemFont(ofSize: textSize)
+        let font = NSFont.systemFont(ofSize: textSize)
+        nameLabel.font = font
+        // 每个文件按自己的名字长度占 2~4 行，格子高度由 sizeForItemAt 同步
+        let lines = iconNameLineCount(item.displayName,
+                                      width: iconCellWidth(iconSize: iconSize) - 4,
+                                      font: font)
+        nameLabel.maximumNumberOfLines = lines
+        nameHeightConstraint.constant = ceil(textSize * 1.32) * CGFloat(lines)
         iconImageView.image = item.thumbnail ?? item.icon
         nameLabel.stringValue = item.displayName
         updateHighlight()
@@ -313,7 +357,7 @@ final class IconCollectionViewItem: NSCollectionViewItem {
     }
 }
 
-final class PaneViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSCollectionViewDataSource, NSCollectionViewDelegate, NSCollectionViewDelegateFlowLayout {
+final class PaneViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSCollectionViewDataSource, NSCollectionViewDelegate, NSCollectionViewDelegateFlowLayout, NSTextFieldDelegate {
     weak var delegate: PaneDelegate?
     let index: Int
 
@@ -360,6 +404,11 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     private var isPathBarEditing = false
     private var inlineRenameField: InlineRenameField?
     private var inlineRenameURL: URL?
+    /// 重命名框固定顶边与宽度；输入文字变化时只调整高度，保持与原文件名重叠
+    private var inlineRenameTop: CGFloat = 0
+    private var inlineRenameLeft: CGFloat = 0
+    private var inlineRenameWidth: CGFloat = 0
+    private var inlineRenameFont: NSFont = NSFont.systemFont(ofSize: 13)
     /// 上次点击文件的时间，用于识别“隔一小会儿再点一次文件名”的重命名手势
     private var lastClickMoment = Date.distantPast
     private let backgroundImageView = NSImageView()
@@ -370,6 +419,9 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     private var isActivePane = false
     private var lastWallpaperSize: NSSize = .zero
     private var lastGridWidth: CGFloat = 0
+    /// 列表窗格宽度，变化时重算列宽（名称列吃掉剩余宽度）
+    private var lastListPaneWidth: CGFloat = 0
+    private var isApplyingColumnLayout = false
     /// 后台自动刷新：每 2 秒检查当前目录的修改时间，变化了才重新加载
     private var autoRefreshTimer: Timer?
     private var lastDirectoryStamp: Date?
@@ -674,12 +726,13 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         tableView.setDraggingSourceOperationMask(.copy, forLocal: false)
 
         let sortHeader = SortAwareTableHeaderView(frame: NSRect(x: 0, y: 0, width: 0, height: 24))
-        sortHeader.onHeaderClick = { [weak self] columnIndex, clickCount in
+        sortHeader.onHeaderClick = { [weak self] columnIndex, _ in
             guard let self,
                   columnIndex < self.tableView.tableColumns.count,
                   let key = PaneSortKey(rawValue: self.tableView.tableColumns[columnIndex].identifier.rawValue) else { return }
             self.forcedSortKey = key
-            self.forcedAscending = clickCount < 2
+            // 单击表头：同一列在递增/递减间交替；切换到别的列时从递增开始。
+            self.forcedAscending = self.sortKey == key ? !self.sortAscending : true
         }
         tableView.headerView = sortHeader
 
@@ -694,14 +747,57 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
             column.sortDescriptorPrototype = NSSortDescriptor(key: key, ascending: true)
             tableView.addTableColumn(column)
         }
-        // 窄窗格下优先压缩最后一列，尽量保持名称列的宽度
-        tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        // 列宽由 updateListColumnWidthsIfNeeded 按窗格宽度统一计算，禁用 AppKit 自动分配
+        tableView.columnAutoresizingStyle = .noColumnAutoresizing
         tableView.sortDescriptors = [NSSortDescriptor(key: sortKey.rawValue, ascending: true)]
+    }
+
+    /// 列表列宽随窗格宽度自适应：
+    /// - 窄窗格只显示「名称 + 修改日期」，名称列占满剩余宽度（默认窗口大小）；
+    /// - 中等宽度追加「类型」；宽窗格显示全部四列（窗口最大化）。
+    /// 除名称外的列保持固定宽度，名称列吃掉所有剩余空间，避免默认大小下名称列过宽、其他列被挤出可视区。
+    private func updateListColumnWidthsIfNeeded(force: Bool = false) {
+        guard viewMode == .list else { return }
+        let width = tableView.bounds.width
+        guard width > 100 else { return }
+        if !force, abs(width - lastListPaneWidth) <= 1 { return }
+        lastListPaneWidth = width
+
+        let columns = tableView.tableColumns
+        guard let name = columns.first(where: { $0.identifier.rawValue == "name" }),
+              let modified = columns.first(where: { $0.identifier.rawValue == "modified" }),
+              let kind = columns.first(where: { $0.identifier.rawValue == "kind" }),
+              let size = columns.first(where: { $0.identifier.rawValue == "size" }) else { return }
+
+        // 阈值按逻辑点估算：454pt 左右的双列窗格、693pt 左右的四列窗格
+        let showKind = width >= 560
+        let showSize = width >= 640
+
+        isApplyingColumnLayout = true
+        kind.isHidden = !showKind
+        size.isHidden = !showSize
+        modified.width = 127
+        kind.width = 100
+        size.width = 85
+        let fixed = modified.width + (showKind ? kind.width : 0) + (showSize ? size.width : 0)
+        // 预留垂直滚动条宽度，避免最大化后最右侧的“大小”列被裁掉；
+        // 最大化（四列）布局下再把“名称”列累计收窄 37pt（5 + 7 + 10 + 15）。
+        let maximizedNameReduction: CGFloat = showSize ? 37 : 0
+        name.width = max(220, width - fixed - 16 - maximizedNameReduction)
+        isApplyingColumnLayout = false
+
+        tableView.enumerateAvailableRowViews { rowView, _ in
+            for columnIndex in tableView.tableColumns.indices {
+                guard let cell = rowView.view(atColumn: columnIndex) as? NSTableCellView else { continue }
+                layoutFileCellText(cell)
+            }
+        }
+        tableView.needsDisplay = true
     }
 
     /// 列顺序 / 列宽变化后，按单元格当前实际宽度重排文本，立即消除跨列重叠。
     @objc private func tableViewColumnsDidChange(_ notification: Notification) {
-        guard viewMode == .list else { return }
+        guard viewMode == .list, !isApplyingColumnLayout else { return }
         tableView.enumerateAvailableRowViews { rowView, _ in
             for columnIndex in tableView.tableColumns.indices {
                 guard let cell = rowView.view(atColumn: columnIndex) as? NSTableCellView else { continue }
@@ -718,32 +814,47 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         cell.textField?.frame = NSRect(x: left, y: 3, width: width, height: max(18, cell.bounds.height - 6))
     }
 
-    /// 自适应网格：按窗格可用宽度排布尽可能多的列，再把剩余宽度均分到每列，
-    /// 这样图标间不留大片空白，同时一屏能显示更多文件；图标越大格子越大。
-    private func iconCellSize(forWidth width: CGFloat) -> NSSize {
+    /// 图标格子：宽度固定为「图标 + 少量文字边距」，剩余空白留在窗格右侧，
+    /// 不再把多余宽度均分到每列，避免放大图标后图标之间出现大片空隙。
+    /// 高度 = 图标 + 图标与文字间距 + 文件名行数（2~4）行高 + 上下留白。
+    /// 同一行的所有格子使用相同高度，确保图标在同一水平线上。
+    private func iconCellSize(lines: Int = 2) -> NSSize {
         let iconSize = AppSettings.iconSize(for: index)
-        let inset: CGFloat = 8
-        let spacing: CGFloat = 4
-        let minCellWidth = iconSize + 16        // 图标 + 文件名的最小文字宽度
-        let usable = max(minCellWidth, width - inset * 2)
-        let columns = max(1, floor((usable + spacing) / (minCellWidth + spacing)))
-        let cellWidth = floor((usable - (columns - 1) * spacing) / columns)
-        // 高度按两行文件名的实际行高预留，字号变大时不会裁切文字
-        let lineHeight = ceil(AppSettings.textSize(for: index) * 1.32)
-        let cellHeight = iconSize + 14 + lineHeight * 2
-        return NSSize(width: max(minCellWidth, cellWidth), height: cellHeight)
+        let textSize = AppSettings.textSize(for: index)
+        let lineHeight = ceil(textSize * 1.32)
+        let cellHeight = 4 + iconSize + 4 + lineHeight * CGFloat(lines) + 6
+        return NSSize(width: iconCellWidth(iconSize: iconSize), height: cellHeight)
     }
 
-    private func iconCellSize() -> NSSize {
-        iconCellSize(forWidth: max(0, collectionView.bounds.width))
+    /// 当前窗格宽度下每行能排几个图标；与 NSCollectionViewFlowLayout 的固定 itemSize + 最小间距一致。
+    private func iconGridColumnCount() -> Int {
+        let width = max(0, collectionView.bounds.width)
+        let cellWidth = iconCellWidth(iconSize: AppSettings.iconSize(for: index))
+        let inset: CGFloat = 8
+        let spacing: CGFloat = 6
+        return max(1, Int(floor((width - inset * 2 + spacing) / (cellWidth + spacing))))
+    }
+
+    /// 取某一行中最长文件名所需的行数（2~4），整行共用该高度。
+    private func iconRowLineCount(forItemAt item: Int) -> Int {
+        let columns = iconGridColumnCount()
+        let rowStart = item - item % columns
+        let rowEnd = min(rowStart + columns, displayedItems.count)
+        let font = NSFont.systemFont(ofSize: AppSettings.textSize(for: index))
+        let textWidth = iconCellWidth(iconSize: AppSettings.iconSize(for: index)) - 4
+        var lines = 2
+        for i in rowStart..<rowEnd {
+            lines = max(lines, iconNameLineCount(displayedItems[i].displayName, width: textWidth, font: font))
+        }
+        return lines
     }
 
     private func configureCollectionView() {
         let layout = NSCollectionViewFlowLayout()
         layout.itemSize = iconCellSize()
-        layout.minimumInteritemSpacing = 4
-        layout.minimumLineSpacing = 6
-        layout.sectionInset = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        layout.minimumInteritemSpacing = 6
+        layout.minimumLineSpacing = 8
+        layout.sectionInset = NSEdgeInsets(top: 6, left: 8, bottom: 8, right: 8)
         collectionView.collectionViewLayout = layout
         collectionView.dataSource = self
         collectionView.delegate = self
@@ -784,6 +895,8 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
             collectionView.removeFromSuperview()
             scrollView.documentView = tableView
             tableView.frame = scrollView.bounds
+            lastListPaneWidth = 0
+            updateListColumnWidthsIfNeeded(force: true)
             tableView.reloadData()
         } else {
             tableView.removeFromSuperview()
@@ -810,9 +923,9 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     @objc func applyAppearanceSettings() {
         if let layout = collectionView.collectionViewLayout as? NSCollectionViewFlowLayout {
             layout.itemSize = iconCellSize()
-            layout.minimumInteritemSpacing = 4
-            layout.minimumLineSpacing = 6
-            layout.sectionInset = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+            layout.minimumInteritemSpacing = 6
+            layout.minimumLineSpacing = 8
+            layout.sectionInset = NSEdgeInsets(top: 6, left: 8, bottom: 8, right: 8)
             layout.invalidateLayout()
         }
         tableView.rowHeight = max(24, AppSettings.textSize(for: index) + 12)
@@ -880,6 +993,7 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
 
         if viewMode == .list {
             tableView.frame = scrollView.bounds
+            updateListColumnWidthsIfNeeded()
         } else {
             collectionView.frame = scrollView.bounds
             // 窗格宽度变化后重新计算列数，让每一行尽量排满
@@ -1123,6 +1237,15 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
             item.state = sortKey == key ? .on : .off
             menu.addItem(item)
         }
+        menu.addItem(.separator())
+        let ascendingItem = NSMenuItem(title: "递增", action: #selector(sortAscendingOrder), keyEquivalent: "")
+        ascendingItem.target = self
+        ascendingItem.state = sortAscending ? .on : .off
+        menu.addItem(ascendingItem)
+        let descendingItem = NSMenuItem(title: "递减", action: #selector(sortDescendingOrder), keyEquivalent: "")
+        descendingItem.target = self
+        descendingItem.state = sortAscending ? .off : .on
+        menu.addItem(descendingItem)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
     }
 
@@ -1235,13 +1358,31 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     @objc func sortByModified() { setSortKey(.modified) }
     @objc func sortBySize() { setSortKey(.size) }
     @objc func sortByKind() { setSortKey(.kind) }
+    @objc func sortAscendingOrder() { setSortDirection(true) }
+    @objc func sortDescendingOrder() { setSortDirection(false) }
 
     private func setSortKey(_ key: PaneSortKey) {
         sortKey = key
+        // 换排序列时与 Windows 一致，默认从递增开始
         sortAscending = true
+        forcedSortKey = nil
+        forcedAscending = nil
         applyFilterAndSort()
         isApplyingSortDescriptors = true
         tableView.sortDescriptors = [NSSortDescriptor(key: key.rawValue, ascending: true)]
+        isApplyingSortDescriptors = false
+        delegate?.paneDidChangeState(self)
+    }
+
+    /// 只切换排序方向，不改变当前排序键
+    private func setSortDirection(_ ascending: Bool) {
+        guard sortAscending != ascending else { return }
+        sortAscending = ascending
+        forcedSortKey = nil
+        forcedAscending = nil
+        applyFilterAndSort()
+        isApplyingSortDescriptors = true
+        tableView.sortDescriptors = [NSSortDescriptor(key: sortKey.rawValue, ascending: ascending)]
         isApplyingSortDescriptors = false
         delegate?.paneDidChangeState(self)
     }
@@ -1387,10 +1528,19 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         let baseName = isApp ? fullName : (fullName as NSString).deletingPathExtension
 
         guard let anchor = renameAnchor(for: itemIndex) else { return }
+        inlineRenameTop = anchor.frame.maxY
+        inlineRenameLeft = anchor.frame.minX
+        inlineRenameWidth = anchor.frame.width
+        inlineRenameFont = anchor.font
+
         let field = InlineRenameField(frame: anchor.frame)
         field.stringValue = fullName
         field.font = anchor.font
         field.alignment = anchor.alignment
+        field.isEditable = true
+        field.isSelectable = true
+        field.delegate = self
+        field.preferredTextHeight = anchor.textHeight
         field.isBordered = false
         field.isBezeled = true
         field.bezelStyle = .squareBezel
@@ -1398,9 +1548,17 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         field.backgroundColor = NSColor.textBackgroundColor
         field.textColor = .labelColor
         field.focusRingType = .none
-        field.cell?.usesSingleLineMode = true
-        field.cell?.wraps = false
-        field.cell?.isScrollable = true
+        if viewMode == .list {
+            field.cell?.usesSingleLineMode = true
+            field.cell?.wraps = false
+            field.cell?.isScrollable = true
+        } else {
+            // 图标模式：多行显示完整名字（可覆盖下方图标），不再单行横向滚动
+            field.cell?.usesSingleLineMode = false
+            field.cell?.wraps = true
+            field.cell?.isScrollable = false
+            field.cell?.lineBreakMode = .byWordWrapping
+        }
         field.target = self
         field.action = #selector(inlineRenameCommitted(_:))
         field.onCancel = { [weak self] in self?.cancelInlineRename() }
@@ -1422,7 +1580,7 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     /// 找到“文件名”在哪个视图里、放在什么位置
-    private func renameAnchor(for itemIndex: Int) -> (container: NSView, frame: NSRect, font: NSFont, alignment: NSTextAlignment)? {
+    private func renameAnchor(for itemIndex: Int) -> (container: NSView, frame: NSRect, font: NSFont, alignment: NSTextAlignment, textHeight: CGFloat)? {
         if viewMode == .list {
             // 列可能被用户拖动重排，按标识找“名称”列，别假定它始终是第 0 列
             let nameColumn = tableView.tableColumns.firstIndex { $0.identifier.rawValue == "name" } ?? 0
@@ -1437,22 +1595,59 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
                                y: text.frame.minY - 1,
                                width: width,
                                height: max(20, text.frame.height + 2))
-            return (cell, frame, font, .left)
+            return (cell, frame, font, .left, frame.height)
         }
         guard let iconItem = collectionView.item(at: IndexPath(item: itemIndex, section: 0)) as? IconCollectionViewItem else {
             return nil
         }
-        let labelFrame = iconItem.nameLabelFrame(in: iconItem.view)
-        let lineHeight = max(24, ceil(AppSettings.textSize(for: index) * 1.3) + 8)
-        let fieldFrame = NSRect(x: labelFrame.minX - 2,
-                               y: max(labelFrame.minY, labelFrame.maxY - lineHeight),
-                               width: max(60, labelFrame.width + 4),
-                               height: lineHeight)
-        return (iconItem.view, fieldFrame, NSFont.systemFont(ofSize: AppSettings.textSize(for: index)), .center)
+        let font = NSFont.systemFont(ofSize: AppSettings.textSize(for: index))
+        let name = displayedItems[itemIndex].displayName
+        // 按完整名字计算高度，长名字多行展开时可以盖住下面的图标（Windows 资源管理器的行为）。
+        // 直接取文件名标签在 collectionView 里的实际位置，避免格子坐标换算偏差。
+        let labelFrameInGrid = iconItem.nameLabelFrame(in: collectionView)
+        // NSCollectionView 使用翻转坐标，标签顶部是 minY
+        let labelTop = labelFrameInGrid.minY
+        let width = labelFrameInGrid.width + 4
+        // 输入框顶部与原文件名顶部重合；多出的高度向下延伸并压住下一行图标。
+        let textHeight = renameTextHeight(name, width: width - 8, font: font)
+        // 输入框只包住文字；下方Icon通过临时隐藏让路，框内不再留空白。
+        let fieldHeight = textHeight + renameFieldPadding
+        let fieldFrameInGrid = NSRect(x: labelFrameInGrid.minX - 2,
+                                      y: labelTop,
+                                      width: width,
+                                      height: fieldHeight)
+        // 挂到窗格根视图而不是 collectionView：格子重载不会把输入框盖住，
+        // 也能让多出的部分越过滚动视图边界压住下一行图标。
+        let fieldFrame = collectionView.convert(fieldFrameInGrid, to: view)
+        return (view, fieldFrame, font, .center, textHeight)
     }
 
     @objc private func inlineRenameCommitted(_ sender: NSTextField) {
         commitInlineRename(sender.stringValue)
+    }
+
+    /// 图标模式下随输入内容实时调整重命名框高度：顶边不动，底部随文字行数伸缩
+    func controlTextDidChange(_ obj: Notification) {
+        guard viewMode == .icon,
+              let field = obj.object as? InlineRenameField,
+              field === inlineRenameField else { return }
+        let textHeight = renameTextHeight(field.stringValue,
+                                          width: inlineRenameWidth - 8,
+                                          font: inlineRenameFont)
+        let height = textHeight + renameFieldPadding
+        field.frame = NSRect(x: inlineRenameLeft,
+                             y: inlineRenameTop - height,
+                             width: inlineRenameWidth,
+                             height: height)
+        field.preferredTextHeight = textHeight
+        // 让正在编辑的文本视图同步到新的顶部对齐区域。
+        // 编辑器实际挂在 _NSKeyboardFocusClipView 上，必须转换到它的直接父视图坐标，
+        // 之前转换到 field.superview（窗格根视图）会把编辑器挪到框体下方。
+        if let editor = field.currentEditor(), let editorSuperview = editor.superview {
+            let textRect = field.cell?.titleRect(forBounds: field.bounds) ?? field.bounds
+            editor.frame = field.convert(textRect, to: editorSuperview)
+        }
+        field.needsDisplay = true
     }
 
     /// 提交（无参数版本供点击别处 / 导航时调用）
@@ -2190,7 +2385,8 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     func collectionView(_ collectionView: NSCollectionView, layout collectionViewLayout: NSCollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> NSSize {
-        iconCellSize(forWidth: max(0, collectionView.bounds.width))
+        guard indexPath.item < displayedItems.count else { return iconCellSize() }
+        return iconCellSize(lines: iconRowLineCount(forItemAt: indexPath.item))
     }
 
     // MARK: - 供菜单校验使用
@@ -2266,9 +2462,59 @@ final class PathBashField: NSTextField {
     }
 }
 
+/// 多行重命名时让文字始终贴在输入框顶部，多出的框体高度向下覆盖下一行图标
+private final class TopAlignedTextFieldCell: NSTextFieldCell {
+    var textHeight: CGFloat = 0
+
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        let height = min(max(1, textHeight), max(1, rect.height - 4))
+        // NSTextField 是 flipped 视图：bounds 的 minY 才是顶部。
+        // 之前按 maxY 计算会把文字压到框体底部，导致编辑文字与原文件名错开、中间空出一块。
+        return NSRect(x: rect.minX + 2,
+                      y: rect.minY + 2,
+                      width: max(1, rect.width - 4),
+                      height: height)
+    }
+
+    override func edit(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, event: NSEvent?) {
+        super.edit(withFrame: titleRect(forBounds: rect), in: controlView, editor: textObj, delegate: delegate, event: event)
+    }
+
+    override func select(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, start selStart: Int, length selLength: Int) {
+        super.select(withFrame: titleRect(forBounds: rect), in: controlView, editor: textObj, delegate: delegate, start: selStart, length: selLength)
+    }
+}
+
 /// 就地重命名用的输入框：回车 / Tab 提交，Esc 取消
 final class InlineRenameField: NSTextField {
     var onCancel: (() -> Void)?
+    var preferredTextHeight: CGFloat = 0 {
+        didSet {
+            (cell as? TopAlignedTextFieldCell)?.textHeight = preferredTextHeight
+            needsDisplay = true
+        }
+    }
+
+    private func installCell() {
+        let customCell = TopAlignedTextFieldCell(textCell: "")
+        customCell.wraps = true
+        customCell.isScrollable = false
+        customCell.lineBreakMode = .byWordWrapping
+        // 替换 cell 会重置可编辑性，必须显式恢复，否则无法成为第一响应者、无法输入
+        customCell.isEditable = true
+        customCell.isSelectable = true
+        cell = customCell
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        installCell()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        installCell()
+    }
 
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {

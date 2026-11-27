@@ -366,18 +366,12 @@ final class MainViewController: NSViewController, PaneDelegate, SidebarDelegate,
     @objc private func showGlobalSettingsMenu(_ sender: NSButton) {
         let menu = NSMenu()
         menu.addItem(title: "回到默认位置", action: #selector(goToDefaults), target: self, keyEquivalent: "")
-        menu.addItem(title: "恢复内置默认路径", action: #selector(resetDefaultPaths), target: self, keyEquivalent: "")
         menu.addItem(title: "恢复图标默认尺寸", action: #selector(resetDefaultSizes), target: self, keyEquivalent: "")
         menu.addItem(title: "批量重命名选中项…", action: #selector(openBulkRename), target: self, keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(title: AppSettings.sidebarVisible ? "隐藏侧边栏" : "显示侧边栏",
                      action: #selector(globalToggleSidebar), target: self, keyEquivalent: "")
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
-    }
-
-    @objc private func resetDefaultPaths() {
-        AppSettings.resetDefaultPaths()
-        goToDefaults()
     }
 
     @objc private func globalToggleSidebar() { toggleSidebar() }
@@ -532,6 +526,8 @@ final class MainViewController: NSViewController, PaneDelegate, SidebarDelegate,
     func sortByModified() { activePane.sortByModified() }
     func sortBySize() { activePane.sortBySize() }
     func sortByKind() { activePane.sortByKind() }
+    func sortAscendingOrder() { activePane.sortAscendingOrder() }
+    func sortDescendingOrder() { activePane.sortDescendingOrder() }
 
     func toggleSidebar() {
         let visible = !AppSettings.sidebarVisible

@@ -293,10 +293,6 @@ enum AppSettings {
         defaults.set(paths.map(\.path), forKey: defaultPathsKey)
     }
 
-    static func resetDefaultPaths() {
-        defaults.removeObject(forKey: defaultPathsKey)
-    }
-
     /// 只更新前 N 个窗格，保留其余已保存路径，切换布局时不丢目录
     static func savePaneURLs(_ urls: [URL]) {
         var saved = defaults.stringArray(forKey: paneKey) ?? []

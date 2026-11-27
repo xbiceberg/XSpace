@@ -1350,6 +1350,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         add("按修改日期排序", #selector(sortByModified), "", to: menu)
         add("按大小排序", #selector(sortBySize), "", to: menu)
         add("按类型排序", #selector(sortByKind), "", to: menu)
+        add("递增排序", #selector(sortAscendingOrder), "", to: menu)
+        add("递减排序", #selector(sortDescendingOrder), "", to: menu)
         menu.addItem(.separator())
         add("显示/隐藏侧边栏", #selector(toggleSidebar), "s", to: menu, modifiers: [.command, .option])
         add("显示简介", #selector(showInfo), "i", to: menu, modifiers: [.command])
@@ -1444,7 +1446,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             #selector(copyPath), #selector(goBack), #selector(goForward), #selector(goUp),
             #selector(refresh), #selector(toggleHiddenFiles), #selector(focusSearch),
             #selector(toggleSidebar), #selector(sortByName), #selector(sortByModified),
-            #selector(sortBySize), #selector(sortByKind), #selector(goToPath),
+            #selector(sortBySize), #selector(sortByKind),
+            #selector(sortAscendingOrder), #selector(sortDescendingOrder), #selector(goToPath),
         ]
         if paneOnly.contains(sel) {
             // 文字输入态（内联重命名/路径编辑/弹窗，含主窗口内的输入框）时禁用，
@@ -1490,6 +1493,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     @objc func sortByModified() { currentController().sortByModified() }
     @objc func sortBySize() { currentController().sortBySize() }
     @objc func sortByKind() { currentController().sortByKind() }
+    @objc func sortAscendingOrder() { currentController().sortAscendingOrder() }
+    @objc func sortDescendingOrder() { currentController().sortDescendingOrder() }
     @objc func goToPath() { currentController().goToPath() }
     @objc func goHome() { currentController().goHome() }
     @objc func goDesktop() { currentController().goDesktop() }

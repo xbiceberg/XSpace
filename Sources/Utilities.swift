@@ -72,6 +72,19 @@ final class ScreenshotEditorView: NSView {
 
     enum Mode { case selecting, editing }
 
+    /// 选区边框上的 8 个缩放控制点（四角 + 四边中点）
+    private enum ResizeHandle: CaseIterable {
+        case topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left
+
+        var cursor: NSCursor {
+            switch self {
+            case .topLeft, .bottomRight, .topRight, .bottomLeft: return .crosshair
+            case .top, .bottom: return .resizeUpDown
+            case .left, .right: return .resizeLeftRight
+            }
+        }
+    }
+
     /// 马赛克笔刷：按住鼠标涂抹成马赛克，像铅笔/橡皮擦一样
     enum MosaicBrush {
         /// 涂抹直径（点）
@@ -188,7 +201,13 @@ final class ScreenshotEditorView: NSView {
     var backgroundImage: NSImage?
     var mode: Mode = .selecting
     var selectionRect: NSRect = .zero
-    var activeTool: Tool = .rectangle
+    var activeTool: Tool = .rectangle {
+        didSet {
+            selectedAnnotationIndex = nil
+            annotationInteraction = nil
+            needsDisplay = true
+        }
+    }
     var activeColorIndex = 0
     var activeFontSize: CGFloat = ScreenshotEditorView.defaultFontSize
 
@@ -199,6 +218,19 @@ final class ScreenshotEditorView: NSView {
     var onConfirm: (() -> Void)?
 
     private var selectionStart: NSPoint = .zero
+    private var activeResizeHandle: ResizeHandle?
+    private var resizeStartRect: NSRect = .zero
+    /// 当前选中的矩形/椭圆标注；绘制完成后自动选中，可拖动控制点或框体
+    private var selectedAnnotationIndex: Int?
+    private enum AnnotationInteraction {
+        case resize(ResizeHandle)
+        case resizeArrow(Int)
+        case move
+    }
+    private var annotationInteraction: AnnotationInteraction?
+    private var annotationStartRect: NSRect = .zero
+    private var annotationStartPoint: NSPoint = .zero
+    private var annotationStartPoints: [NSPoint] = []
     private var annotations: [Annotation] = []
     private var draft: Annotation?
     private var annotationStart: NSPoint = .zero
@@ -223,11 +255,73 @@ final class ScreenshotEditorView: NSView {
             selectionRect = .zero
         case .editing:
             commitPendingText()
+            // 已选中的标注：先命中控制点，其次命中标注本身
+            if let index = selectedAnnotationIndex, annotations.indices.contains(index) {
+                let item = annotations[index]
+                if item.tool == .arrow {
+                    if let endpoint = arrowHandle(at: point, index: index) {
+                        annotationInteraction = .resizeArrow(endpoint)
+                        annotationStartPoints = item.points
+                        NSCursor.crosshair.set()
+                        needsDisplay = true
+                        return
+                    }
+                    if Self.distance(from: point, to: item.points.first ?? .zero,
+                                     end: item.points.last ?? .zero) <= 8 {
+                        annotationInteraction = .move
+                        annotationStartPoints = item.points
+                        annotationStartPoint = point
+                        needsDisplay = true
+                        return
+                    }
+                } else {
+                    if let handle = annotationHandle(at: point, index: index) {
+                        annotationInteraction = .resize(handle)
+                        annotationStartRect = item.rect
+                        handle.cursor.set()
+                        needsDisplay = true
+                        return
+                    }
+                    if item.rect.insetBy(dx: -6, dy: -6).contains(point) {
+                        annotationInteraction = .move
+                        annotationStartRect = item.rect
+                        annotationStartPoint = point
+                        needsDisplay = true
+                        return
+                    }
+                }
+                selectedAnnotationIndex = nil
+            }
+            // 选区边框控制点：拖动改截图范围
+            if let handle = resizeHandle(at: point) {
+                activeResizeHandle = handle
+                resizeStartRect = selectionRect
+                handle.cursor.set()
+                needsDisplay = true
+                return
+            }
+            // 点中已有的矩形/椭圆/箭头标注则选中它，而不是再画一个新标注
+            if activeTool == .rectangle || activeTool == .ellipse || activeTool == .arrow,
+               let index = editableAnnotationIndex(at: point) {
+                selectedAnnotationIndex = index
+                let item = annotations[index]
+                annotationInteraction = .move
+                annotationStartPoint = point
+                if item.tool == .arrow {
+                    annotationStartPoints = item.points
+                } else {
+                    annotationStartRect = item.rect
+                }
+                needsDisplay = true
+                return
+            }
             guard selectionRect.contains(point) else { needsDisplay = true; return }
             switch activeTool {
             case .text:
+                selectedAnnotationIndex = nil
                 beginText(at: point)
             default:
+                selectedAnnotationIndex = nil
                 annotationStart = point
                 draft = Annotation(tool: activeTool,
                                    rect: NSRect(x: point.x, y: point.y, width: 0, height: 0),
@@ -244,6 +338,47 @@ final class ScreenshotEditorView: NSView {
         case .selecting:
             selectionRect = Self.normalized(from: selectionStart, to: point)
         case .editing:
+            if let index = selectedAnnotationIndex,
+               annotations.indices.contains(index),
+               let interaction = annotationInteraction {
+                switch interaction {
+                case .resize(let handle):
+                    annotations[index].rect = Self.resizedRect(from: annotationStartRect,
+                                                               handle: handle,
+                                                               to: point,
+                                                               limits: selectionRect)
+                case .resizeArrow(let endpoint):
+                    guard annotationStartPoints.indices.contains(endpoint) else { return }
+                    var points = annotationStartPoints
+                    points[endpoint] = Self.clampPoint(point, to: selectionRect)
+                    annotations[index].points = points
+                    annotations[index].rect = Self.boundingRect(of: points)
+                case .move:
+                    if annotations[index].tool == .arrow {
+                        let dx = point.x - annotationStartPoint.x
+                        let dy = point.y - annotationStartPoint.y
+                        let points = annotationStartPoints.map { Self.clampPoint(NSPoint(x: $0.x + dx, y: $0.y + dy), to: selectionRect) }
+                        annotations[index].points = points
+                        annotations[index].rect = Self.boundingRect(of: points)
+                    } else {
+                        var rect = annotationStartRect
+                        rect.origin.x += point.x - annotationStartPoint.x
+                        rect.origin.y += point.y - annotationStartPoint.y
+                        annotations[index].rect = Self.clampAnnotationRect(rect, to: selectionRect)
+                    }
+                }
+                needsDisplay = true
+                return
+            }
+            if let handle = activeResizeHandle {
+                selectionRect = Self.resizedRect(from: resizeStartRect,
+                                                 handle: handle,
+                                                 to: point,
+                                                 limits: bounds)
+                handle.cursor.set()
+                needsDisplay = true
+                return
+            }
             guard var item = draft else { return }
             item.rect = Self.normalized(from: annotationStart, to: point)
             if item.tool == .pen || item.tool == .mosaic {
@@ -270,6 +405,18 @@ final class ScreenshotEditorView: NSView {
                 onSelectionDone?()
             }
         case .editing:
+            if annotationInteraction != nil {
+                annotationInteraction = nil
+                NSCursor.arrow.set()
+                needsDisplay = true
+                return
+            }
+            if activeResizeHandle != nil {
+                activeResizeHandle = nil
+                NSCursor.arrow.set()
+                needsDisplay = true
+                return
+            }
             if var item = draft {
                 item.rect = Self.normalized(from: annotationStart, to: point)
                 switch item.tool {
@@ -284,15 +431,176 @@ final class ScreenshotEditorView: NSView {
                     item.points = [annotationStart, point]
                     if hypot(point.x - annotationStart.x, point.y - annotationStart.y) > 12 {
                         annotations.append(item)
+                        // 箭头画完就选中，显示首尾两个可拖动控制点
+                        selectedAnnotationIndex = annotations.count - 1
                     }
                 default:
-                    if max(item.rect.width, item.rect.height) > 8 { annotations.append(item) }
+                    if max(item.rect.width, item.rect.height) > 8 {
+                        annotations.append(item)
+                        // 矩形/椭圆画完就选中，直接显示可拖动的 8 个控制点
+                        if item.tool == .rectangle || item.tool == .ellipse {
+                            selectedAnnotationIndex = annotations.count - 1
+                        }
+                    }
                 }
                 draft = nil
                 onChange?()
             }
         }
         needsDisplay = true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: bounds,
+                                       options: [.mouseMoved, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard mode == .editing else { NSCursor.arrow.set(); return }
+        if let index = selectedAnnotationIndex, annotations.indices.contains(index) {
+            let item = annotations[index]
+            if item.tool == .arrow {
+                if arrowHandle(at: point, index: index) != nil {
+                    NSCursor.crosshair.set()
+                    return
+                }
+                if Self.distance(from: point, to: item.points.first ?? .zero,
+                                 end: item.points.last ?? .zero) <= 8 {
+                    NSCursor.openHand.set()
+                    return
+                }
+            } else {
+                if let handle = annotationHandle(at: point, index: index) {
+                    handle.cursor.set()
+                    return
+                }
+                if item.rect.insetBy(dx: -6, dy: -6).contains(point) {
+                    NSCursor.openHand.set()
+                    return
+                }
+            }
+        }
+        if let handle = resizeHandle(at: point) {
+            handle.cursor.set()
+            return
+        }
+        NSCursor.arrow.set()
+    }
+
+    /// 控制点位置：四角 + 四边中点
+    private func handleLocations(for rect: NSRect) -> [(handle: ResizeHandle, point: NSPoint)] {
+        return [
+            (.topLeft, NSPoint(x: rect.minX, y: rect.maxY)),
+            (.top, NSPoint(x: rect.midX, y: rect.maxY)),
+            (.topRight, NSPoint(x: rect.maxX, y: rect.maxY)),
+            (.right, NSPoint(x: rect.maxX, y: rect.midY)),
+            (.bottomRight, NSPoint(x: rect.maxX, y: rect.minY)),
+            (.bottom, NSPoint(x: rect.midX, y: rect.minY)),
+            (.bottomLeft, NSPoint(x: rect.minX, y: rect.minY)),
+            (.left, NSPoint(x: rect.minX, y: rect.midY))
+        ]
+    }
+
+    private func resizeHandle(at point: NSPoint) -> ResizeHandle? {
+        guard !selectionRect.isEmpty else { return nil }
+        let radius: CGFloat = 10
+        return handleLocations(for: selectionRect).first { hypot($0.point.x - point.x, $0.point.y - point.y) <= radius }?.handle
+    }
+
+    /// 可编辑标注（矩形/椭圆/箭头）是否命中
+    private func editableAnnotationIndex(at point: NSPoint) -> Int? {
+        for index in annotations.indices {
+            let item = annotations[index]
+            switch item.tool {
+            case .rectangle, .ellipse:
+                if item.rect.insetBy(dx: -8, dy: -8).contains(point) { return index }
+            case .arrow:
+                if Self.distance(from: point, to: item.points.first ?? .zero,
+                                 end: item.points.last ?? .zero) <= 8 { return index }
+            default:
+                break
+            }
+        }
+        return nil
+    }
+
+    private func annotationHandle(at point: NSPoint, index: Int) -> ResizeHandle? {
+        guard annotations.indices.contains(index) else { return nil }
+        let radius: CGFloat = 10
+        return handleLocations(for: annotations[index].rect)
+            .first { hypot($0.point.x - point.x, $0.point.y - point.y) <= radius }?.handle
+    }
+
+    /// 箭头首尾控制点：返回点在 points 中的下标
+    private func arrowHandle(at point: NSPoint, index: Int) -> Int? {
+        guard annotations.indices.contains(index) else { return nil }
+        let points = annotations[index].points
+        guard points.count >= 2 else { return nil }
+        let radius: CGFloat = 10
+        for endpoint in [0, points.count - 1] {
+            if hypot(point.x - points[endpoint].x, point.y - points[endpoint].y) <= radius {
+                return endpoint
+            }
+        }
+        return nil
+    }
+
+    private static func distance(from point: NSPoint, to start: NSPoint, end: NSPoint) -> CGFloat {
+        let dx = end.x - start.x, dy = end.y - start.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0 else { return hypot(point.x - start.x, point.y - start.y) }
+        var t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared
+        t = max(0, min(1, t))
+        return hypot(point.x - (start.x + t * dx), point.y - (start.y + t * dy))
+    }
+
+    private static func clampPoint(_ point: NSPoint, to limits: NSRect) -> NSPoint {
+        NSPoint(x: min(max(point.x, limits.minX), limits.maxX),
+                y: min(max(point.y, limits.minY), limits.maxY))
+    }
+
+    private static func boundingRect(of points: [NSPoint]) -> NSRect {
+        guard let first = points.first else { return .zero }
+        var minX = first.x, minY = first.y, maxX = first.x, maxY = first.y
+        for point in points.dropFirst() {
+            minX = min(minX, point.x); maxX = max(maxX, point.x)
+            minY = min(minY, point.y); maxY = max(maxY, point.y)
+        }
+        return NSRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    /// 标注拖动时限制在选区内，避免拖出截图范围后不可见
+    private static func clampAnnotationRect(_ rect: NSRect, to limits: NSRect) -> NSRect {
+        var result = rect
+        result.origin.x = min(max(result.origin.x, limits.minX), max(limits.minX, limits.maxX - result.width))
+        result.origin.y = min(max(result.origin.y, limits.minY), max(limits.minY, limits.maxY - result.height))
+        return result
+    }
+
+    /// 按拖动的控制点调整选区；四角改两个方向，边中点只改一个方向
+    private static func resizedRect(from rect: NSRect,
+                                    handle: ResizeHandle,
+                                    to rawPoint: NSPoint,
+                                    limits: NSRect) -> NSRect {
+        let minSide: CGFloat = 24
+        let point = NSPoint(x: min(max(rawPoint.x, limits.minX), limits.maxX),
+                            y: min(max(rawPoint.y, limits.minY), limits.maxY))
+        var minX = rect.minX, minY = rect.minY, maxX = rect.maxX, maxY = rect.maxY
+        switch handle {
+        case .left, .topLeft, .bottomLeft: minX = min(point.x, maxX - minSide)
+        case .right, .topRight, .bottomRight: maxX = max(point.x, minX + minSide)
+        default: break
+        }
+        switch handle {
+        case .bottom, .bottomLeft, .bottomRight: minY = min(point.y, maxY - minSide)
+        case .top, .topLeft, .topRight: maxY = max(point.y, minY + minSide)
+        default: break
+        }
+        return NSRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
     // MARK: - 键盘
@@ -338,6 +646,7 @@ final class ScreenshotEditorView: NSView {
         NSGraphicsContext.restoreGraphicsState()
 
         drawSelectionChrome()
+        drawAnnotationChrome()
     }
 
     /// 只有出现马赛克笔迹时才生成底图，避免每次重绘都做一次缩放
@@ -363,21 +672,47 @@ final class ScreenshotEditorView: NSView {
         accent.setStroke()
         border.stroke()
 
-        let handleSize: CGFloat = 6
-        let corners = [
-            NSPoint(x: selectionRect.minX, y: selectionRect.minY),
-            NSPoint(x: selectionRect.maxX, y: selectionRect.minY),
-            NSPoint(x: selectionRect.minX, y: selectionRect.maxY),
-            NSPoint(x: selectionRect.maxX, y: selectionRect.maxY)
-        ]
-        for corner in corners {
-            let rect = NSRect(x: corner.x - handleSize / 2, y: corner.y - handleSize / 2,
+        // 四角 + 四边中点，编辑选区时可拖动改大小
+        let handleSize: CGFloat = 9
+        for item in handleLocations(for: selectionRect) {
+            let rect = NSRect(x: item.point.x - handleSize / 2,
+                              y: item.point.y - handleSize / 2,
                               width: handleSize, height: handleSize)
-            accent.setFill()
-            NSBezierPath(roundedRect: rect, xRadius: 1.5, yRadius: 1.5).fill()
+            let dot = NSBezierPath(ovalIn: rect)
+            dot.lineWidth = 1.5
+            NSColor.white.setFill()
+            accent.setStroke()
+            dot.fill()
+            dot.stroke()
         }
 
         drawSizeBadge()
+    }
+
+    /// 选中矩形/椭圆/箭头标注时叠加控制点；不受选区裁剪影响
+    private func drawAnnotationChrome() {
+        guard let index = selectedAnnotationIndex,
+              annotations.indices.contains(index) else { return }
+        let item = annotations[index]
+        let color = ScreenshotEditorView.palette[min(item.colorIndex, ScreenshotEditorView.palette.count - 1)]
+        let spots: [NSPoint]
+        if item.tool == .arrow {
+            spots = [item.points.first, item.points.last].compactMap { $0 }
+        } else {
+            spots = handleLocations(for: item.rect).map(\.point)
+        }
+        let handleSize: CGFloat = 9
+        for point in spots {
+            let rect = NSRect(x: point.x - handleSize / 2,
+                              y: point.y - handleSize / 2,
+                              width: handleSize, height: handleSize)
+            let dot = NSBezierPath(ovalIn: rect)
+            dot.lineWidth = 1.5
+            NSColor.white.setFill()
+            color.setStroke()
+            dot.fill()
+            dot.stroke()
+        }
     }
 
     private func drawSizeBadge() {
@@ -590,6 +925,10 @@ final class ScreenshotEditorView: NSView {
         commitPendingText()
         guard !annotations.isEmpty else { return }
         annotations.removeLast()
+        if let index = selectedAnnotationIndex, index >= annotations.count {
+            selectedAnnotationIndex = nil
+            annotationInteraction = nil
+        }
         needsDisplay = true
         onChange?()
     }
@@ -599,6 +938,8 @@ final class ScreenshotEditorView: NSView {
         annotations.removeAll()
         draft = nil
         mosaicTileCache = nil
+        selectedAnnotationIndex = nil
+        annotationInteraction = nil
         selectionRect = .zero
         mode = .selecting
         needsDisplay = true
