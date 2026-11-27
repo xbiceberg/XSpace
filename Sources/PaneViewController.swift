@@ -338,6 +338,7 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     private var backButton = NSButton()
     private var forwardButton = NSButton()
     private let titleLabel = NSTextField(labelWithString: "")
+    private let pathCopyButton = TooltipButton(frame: .zero)
     private let searchField = NSSearchField()
     private let actionGroupView = NSView()
     private var actionButtons: [NSButton] = []
@@ -521,6 +522,15 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
                          upButton, newFolderButton, trashButton, terminalButton,
                          hiddenButton, searchButton, moreButton]
         actionButtons.forEach { actionGroupView.addSubview($0) }
+
+        // 标题显示当前目录绝对路径；透明按钮覆盖在标题上，点击即复制该路径
+        pathCopyButton.bezelStyle = .inline
+        pathCopyButton.isBordered = false
+        pathCopyButton.title = ""
+        pathCopyButton.target = self
+        pathCopyButton.action = #selector(copyPathFromTitle)
+        pathCopyButton.tooltipText = "点击复制当前目录绝对路径"
+        toolbarView.addSubview(pathCopyButton)
 
         // 第二行：当前窗格路径面包屑
         pathBarView.wantsLayer = true
@@ -918,6 +928,7 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         let titleRight = actionGroupView.frame.minX - 8 - (searchField.isHidden ? 0 : searchField.frame.width + 6)
         titleLabel.frame = NSRect(x: titleLeft, y: 4,
                                   width: max(40, titleRight - titleLeft), height: 26)
+        pathCopyButton.frame = titleLabel.frame
     }
 
     // MARK: - 数据加载与排序
@@ -1022,7 +1033,7 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         }
         currentURL = url
         pathControl.url = url
-        titleLabel.stringValue = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
+        titleLabel.stringValue = url.path
         searchText = ""
         searchField.stringValue = ""
         generationTick()
@@ -1144,6 +1155,15 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     @objc func copyCurrentPath() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(currentURL.path, forType: .string)
+    }
+
+    /// 点击工具栏标题：复制当前窗格的绝对路径，并给出短暂反馈
+    @objc private func copyPathFromTitle() {
+        copyCurrentPath()
+        TooltipOverlay.shared.show("已复制当前目录绝对路径", for: pathCopyButton)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
+            TooltipOverlay.shared.hide()
+        }
     }
 
     // MARK: - 地址栏 bash 路径

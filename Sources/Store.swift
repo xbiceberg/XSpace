@@ -185,11 +185,6 @@ enum PaneLayout: String, CaseIterable {
     }
 }
 
-struct WorkspaceSnapshot: Codable {
-    let name: String
-    let paths: [String]
-}
-
 enum WallpaperFillMode: String, CaseIterable {
     case stretch
     case tile
@@ -221,7 +216,6 @@ enum AppSettings {
     private static let bookmarksKey = "qspacelite.bookmarks"
     private static let quickAccessKey = "qspacelite.quickAccess"
     private static let legacyCustomPathsKey = "qspacelite.customPaths"   // 旧版只存自定义路径，仅用于迁移
-    private static let workspacesKey = "qspacelite.workspaces"
     private static let hiddenKey = "qspacelite.showHiddenFiles"
     private static let sidebarKey = "qspacelite.sidebarVisible"
     private static let confirmTrashKey = "qspacelite.confirmTrash"
@@ -370,17 +364,6 @@ enum AppSettings {
         var items = quickAccessItems
         items.removeAll { $0.path == path }
         quickAccessItems = items
-    }
-
-    static var workspaces: [WorkspaceSnapshot] {
-        get {
-            guard let data = defaults.data(forKey: workspacesKey) else { return [] }
-            return (try? JSONDecoder().decode([WorkspaceSnapshot].self, from: data)) ?? []
-        }
-        set {
-            guard let data = try? JSONEncoder().encode(newValue) else { return }
-            defaults.set(data, forKey: workspacesKey)
-        }
     }
 
     static var showHiddenFiles: Bool {

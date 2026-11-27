@@ -1,5 +1,7 @@
 import Foundation
 import AppKit
+import ApplicationServices
+import CoreGraphics
 import UniformTypeIdentifiers
 import Carbon.HIToolbox
 
@@ -63,6 +65,8 @@ final class ShortcutRecorder: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        // 录制快捷键时，按键同时会被全局热键通道看到；短暂屏蔽截图触发
+        appDelegate.suppressScreenshotHotKey()
         if event.keyCode == 53 { // Esc 取消录制
             window?.makeFirstResponder(nil)
             return
@@ -637,17 +641,47 @@ final class SettingCardView: NSView {
     }
 }
 
+/// 菜单打开时（齿轮菜单 / 右键菜单 / 主菜单），系统按键分发被菜单吞掉，Carbon 热键收不到。
+/// 拦截 NSMenu 的键等效处理，在菜单自己处理按键前先检查截图快捷键。
+/// 这样覆盖所有菜单，且不改动菜单外观或弹出逻辑。
+extension NSMenu {
+    private static let interceptOnce: Void = {
+        let sel = NSSelectorFromString("performKeyEquivalent:")
+        guard let original = class_getInstanceMethod(NSMenu.self, sel),
+              let replacement = class_getInstanceMethod(NSMenu.self, #selector(NSMenu.xs_performKeyEquivalent(_:)))
+        else { return }
+        method_exchangeImplementations(original, replacement)
+    }()
+
+    static func installScreenshotKeyIntercept() {
+        _ = interceptOnce
+    }
+
+    @objc fileprivate func xs_performKeyEquivalent(_ event: NSEvent) -> Bool {
+        if let app = NSApp.delegate as? AppDelegate, app.handleMenuScreenshotKey(event, menu: self) {
+            return true
+        }
+        // Exchange 后再调用自身即原实现
+        return xs_performKeyEquivalent(event)
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate, NSMenuItemValidation {
     private var controllers: [NSWindow: MainViewController] = [:]
     /// 主窗口（「新窗口打开」弹出的独立单窗口不算）
     private weak var mainWindow: NSWindow?
     private var preferencesWindow: NSWindow?
     private weak var bookmarksMenuRef: NSMenu?
-    private weak var workspacesMenuRef: NSMenu?
     private var lastHorizontalSwipe = Date.distantPast
     private var globalScreenshotMonitor: Any?
     private var screenshotHotKeyRef: EventHotKeyRef?
     private var screenshotHotKeyHandler: EventHandlerRef?
+    /// HID 层全局键盘监听：Carbon 热键在视频播放器全屏（安全输入/独占键盘）时可能收不到，
+    /// 用 listen-only 的 CGEventTap 作为第二通道，不吞事件、不影响其他 App。
+    private var screenshotEventTap: CFMachPort?
+    private var screenshotTapRunLoopSource: CFRunLoopSource?
+    /// 录制快捷键时短暂屏蔽截图触发，避免刚设置完就误触发
+    private var suppressScreenshotUntil = Date.distantPast
     private var statusItem: NSStatusItem?
     private var iconSliders: [NSSlider] = []
     private var textSliders: [NSSlider] = []
@@ -660,6 +694,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var undoLimitLabel: NSTextField?
     private weak var undoMenuItem: NSMenuItem?
     private var screenshotDirectoryLabel: NSTextField?
+    private var accessibilityButton: NSButton?
     /// 「布局」页的单选按钮，切换时手动互斥
     private var layoutRadios: [NSButton] = []
     /// 偏好设置的标签容器，布局变化时用它重建「外观」「壁纸」页
@@ -703,6 +738,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             alert.icon = SevenZipIcon.archive
             alert.runModal()
         }
+    }
+
+    /// 用户从系统设置返回时，自动刷新权限状态并补装 HID 层监听（无需重启 App）
+    func applicationDidBecomeActive(_ notification: Notification) {
+        refreshAccessibilityButton()
+        installScreenshotEventTap()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -768,6 +809,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
             guard let self = self else { return event }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
             let controller = self.currentController()
             // 焦点是否落在「文件浏览器」区域（白名单）。所有会改写文件/导航的快捷键都要求它为真。
             // 任何输入框、字段编辑器、弹窗（批量重命名/偏好设置）聚焦时一律为 false，
@@ -843,8 +885,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             return event
         }
 
-        // 注册系统级全局截图热键（Carbon 热键不依赖辅助功能权限，其他 App 前台也能触发）
+        // 菜单打开时 Carbon 热键会被菜单吞掉，通过 method swizzling 拦截 NSMenu 的键等效处理
+        NSMenu.installScreenshotKeyIntercept()
+        installMenuTrackingObserver()
+
+        // 注册截图热键：Carbon 全局热键（无需权限）+ HID 层事件监听（应对全屏播放器吞键）
         registerScreenshotHotKey()
+        installScreenshotEventTap()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(screenshotShortcutDidChange),
@@ -906,7 +953,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let handler: EventHandlerUPP = { _, _, _ -> OSStatus in
-            DispatchQueue.main.async { appDelegate.takeScreenshotFromHotKey() }
+            DispatchQueue.main.async { appDelegate.fireScreenshotHotKey() }
             return noErr
         }
         InstallEventHandler(GetApplicationEventTarget(), handler, 1, &eventType, nil, &screenshotHotKeyHandler)
@@ -925,6 +972,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     @objc private func screenshotShortcutDidChange() {
         registerScreenshotHotKey()
+        // CGEventTap 回调每次读取 AppSettings，无需重建；但权限可能刚被授予，重试安装
+        installScreenshotEventTap()
+    }
+
+    // MARK: - HID 层截图热键（应对全屏播放器独占键盘）
+
+    /// 在 .cghidEventTap 上以 listenOnly 监听 keyDown。Carbon 热键单独注册到应用事件目标，
+    /// 当视频播放器进入全屏并独占键盘/启用安全输入时可能不再投递；HID 层能看到原始按键，
+    /// 作为兜底通道。listenOnly 且原样返回事件，绝不吞掉其他 App 的按键。
+    private func installScreenshotEventTap() {
+        guard screenshotEventTap == nil else { return }
+        // 不再预先用 AXIsProcessTrusted 拦住：直接尝试创建 tap。
+        // 即使辅助功能未勾选，前台应用创建 listenOnly 的 HID tap 通常仍可用；
+        // 创建失败时静默退回 Carbon 通道。菜单追踪期间 Carbon 收不到热键，
+        // 这条 HID 通道是唯一能在菜单打开时捕获按键的路径。
+
+        let callback: CGEventTapCallBack = { _, type, event, _ in
+            guard type == .keyDown else { return Unmanaged.passUnretained(event) }
+            let shortcut = AppSettings.screenshotShortcut
+            let code = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+            guard code == shortcut.keyCode else { return Unmanaged.passUnretained(event) }
+            let cgFlags = event.flags
+            var mods: UInt = 0
+            if cgFlags.contains(.maskCommand) { mods |= NSEvent.ModifierFlags.command.rawValue }
+            if cgFlags.contains(.maskShift) { mods |= NSEvent.ModifierFlags.shift.rawValue }
+            if cgFlags.contains(.maskAlternate) { mods |= NSEvent.ModifierFlags.option.rawValue }
+            if cgFlags.contains(.maskControl) { mods |= NSEvent.ModifierFlags.control.rawValue }
+            guard mods == shortcut.modifiers else { return Unmanaged.passUnretained(event) }
+            DispatchQueue.main.async { appDelegate.fireScreenshotHotKey() }
+            return Unmanaged.passUnretained(event)
+        }
+        guard let tap = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap,
+                                          options: .listenOnly,
+                                          eventsOfInterest: CGEventMask(1 << CGEventType.keyDown.rawValue),
+                                          callback: callback, userInfo: nil)
+        else { return }
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        screenshotEventTap = tap
+        screenshotTapRunLoopSource = source
     }
 
     /// 撤销快捷键或步数变化：菜单、录制控件与数值标签同步刷新
@@ -937,10 +1025,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         undoLimitLabel?.stringValue = "\(AppSettings.undoLimit)"
     }
 
-    /// 全局热键回调入口：录制快捷键时不触发截图
-    @objc func takeScreenshotFromHotKey() {
-        if NSApp.keyWindow?.firstResponder is ShortcutRecorder { return }
+    /// 截图热键的统一入口，带去重：Carbon 与 CGEventTap 两条通道可能同时命中同一次按键，
+    /// 0.35 秒内只触发一次，避免弹出两个截图浮层。
+    private var lastScreenshotFire = Date.distantPast
+
+
+    /// 供 NSMenu 键等效拦截调用：判断事件是否为截图快捷键；命中时先关掉该菜单再截图，
+    /// 避免菜单出现在全屏定格画面里。
+    @objc func handleMenuScreenshotKey(_ event: NSEvent, menu: NSMenu) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard matchesScreenshotShortcut(event, flags: flags) else { return false }
+        menu.cancelTracking()
+        fireScreenshotHotKey()
+        return true
+    }
+
+    /// 判断按键是否等于用户设置的截图快捷键（只比较四个修饰键，忽略设备相关位）
+    private func matchesScreenshotShortcut(_ event: NSEvent, flags: NSEvent.ModifierFlags) -> Bool {
+        let shortcut = AppSettings.screenshotShortcut
+        guard event.keyCode == shortcut.keyCode else { return false }
+        let mask: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
+        return flags.intersection(mask) == shortcut.flags.intersection(mask)
+    }
+
+    /// 当前正在追踪的菜单（由 didBeginTracking / didEndTracking 通知维护）
+    private weak var trackingMenu: NSMenu?
+    private var menuTrackingObserverInstalled = false
+
+    private func installMenuTrackingObserver() {
+        guard !menuTrackingObserverInstalled else { return }
+        menuTrackingObserverInstalled = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(menuDidBegin(_:)),
+            name: NSMenu.didBeginTrackingNotification, object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(menuDidEnd(_:)),
+            name: NSMenu.didEndTrackingNotification, object: nil
+        )
+    }
+
+    @objc private func menuDidBegin(_ note: Notification) {
+        trackingMenu = note.object as? NSMenu
+    }
+
+    @objc private func menuDidEnd(_ note: Notification) {
+        trackingMenu = nil
+    }
+
+    @objc func fireScreenshotHotKey() {
+        // 录制快捷键期间屏蔽，避免按下组合键时被录制与截图同时响应
+        guard Date() > suppressScreenshotUntil else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastScreenshotFire) > 0.35 else { return }
+        lastScreenshotFire = now
+        // 菜单打开时截图，先关掉菜单，避免菜单浮在定格画面上遮挡选区
+        trackingMenu?.cancelTracking()
+        trackingMenu = nil
+        NSApp.mainMenu?.cancelTracking()
+        for window in NSApp.windows { window.menu?.cancelTracking() }
         takeScreenshot()
+    }
+
+    /// Carbon 热键回调入口（保留给菜单/兼容调用）。两条通道最终都走 fireScreenshotHotKey。
+    @objc func takeScreenshotFromHotKey() {
+        fireScreenshotHotKey()
+    }
+
+    /// 录制快捷键期间短暂停用截图热键，避免按下组合键时被录制与截图同时响应
+    func suppressScreenshotHotKey() {
+        suppressScreenshotUntil = Date().addingTimeInterval(0.6)
     }
 
     // MARK: - 菜单栏常驻图标
@@ -1120,7 +1274,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         appMenuItem.submenu = appMenu()
         mainMenu.addItem(appMenuItem)
 
-        for menu in [fileMenu(), editMenu(), viewMenu(), goMenu(), bookmarksMenu(), workspacesMenu(), windowMenu(), helpMenu()] {
+        for menu in [fileMenu(), editMenu(), viewMenu(), goMenu(), bookmarksMenu(), windowMenu(), helpMenu()] {
             let item = NSMenuItem()
             item.submenu = menu
             mainMenu.addItem(item)
@@ -1199,6 +1353,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         menu.addItem(.separator())
         add("显示/隐藏侧边栏", #selector(toggleSidebar), "s", to: menu, modifiers: [.command, .option])
         add("显示简介", #selector(showInfo), "i", to: menu, modifiers: [.command])
+        menu.addItem(.separator())
+        add("重置为默认布局", #selector(resetPanes), "", to: menu)
         return menu
     }
 
@@ -1221,16 +1377,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         menu.delegate = self
         bookmarksMenuRef = menu
         add("添加当前文件夹为书签", #selector(addBookmark), "", to: menu)
-        menu.addItem(.separator())
-        return menu
-    }
-
-    private func workspacesMenu() -> NSMenu {
-        let menu = NSMenu(title: "工作区")
-        menu.delegate = self
-        workspacesMenuRef = menu
-        add("保存当前工作区…", #selector(saveWorkspace), "", to: menu)
-        add("重置为默认布局", #selector(resetPanes), "", to: menu)
         menu.addItem(.separator())
         return menu
     }
@@ -1268,7 +1414,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         return item
     }
 
-    // MARK: - NSMenuDelegate（动态书签 / 工作区）
+    // MARK: - NSMenuDelegate（动态书签）
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === bookmarksMenuRef {
@@ -1278,15 +1424,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 item.target = self
                 item.representedObject = url
                 item.tag = 700 + index
-                menu.addItem(item)
-            }
-        } else if menu === workspacesMenuRef {
-            menu.items.filter { $0.tag >= 800 }.forEach { menu.removeItem($0) }
-            for (index, space) in AppSettings.workspaces.enumerated() {
-                let item = NSMenuItem(title: space.name, action: #selector(openWorkspace(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = space
-                item.tag = 800 + index
                 menu.addItem(item)
             }
         }
@@ -1361,7 +1498,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     @objc func goApplications() { currentController().goApplications() }
     @objc func goRoot() { currentController().goRoot() }
     @objc func addBookmark() { currentController().addBookmark() }
-    @objc func saveWorkspace() { currentController().saveWorkspace() }
     @objc func resetPanes() { currentController().resetPanes() }
     @objc func focusPane(_ item: NSMenuItem) { currentController().focusPane(at: item.tag) }
 
@@ -1375,11 +1511,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     @objc func openBookmark(_ item: NSMenuItem) {
         guard let url = item.representedObject as? URL else { return }
         currentController().activePane.navigate(to: url)
-    }
-
-    @objc func openWorkspace(_ item: NSMenuItem) {
-        guard let space = item.representedObject as? WorkspaceSnapshot else { return }
-        currentController().restoreWorkspace(space)
     }
 
     /// 版本号（Info.plist 的 CFBundleShortVersionString）
@@ -1605,10 +1736,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         screenshotRecorder.kind = .screenshot
         view.addSubview(screenshotRecorder)
         self.screenshotRecorder = screenshotRecorder
-        let screenshotNote = makeLabel("全局生效，其他 App 前台也能触发", frame: NSRect(x: 310, y: 418, width: 220, height: 20))
+        let screenshotNote = makeLabel("全局生效，全屏播放器内也可触发", frame: NSRect(x: 310, y: 418, width: 220, height: 20))
         screenshotNote.font = NSFont.systemFont(ofSize: 11)
         screenshotNote.textColor = .tertiaryLabelColor
         view.addSubview(screenshotNote)
+
+        let accessButton = NSButton(title: "", target: self, action: #selector(requestAccessibility))
+        accessButton.frame = NSRect(x: controlX, y: 350, width: 310, height: 24)
+        accessButton.bezelStyle = .rounded
+        accessButton.font = NSFont.systemFont(ofSize: 11)
+        view.addSubview(accessButton)
+        self.accessibilityButton = accessButton
+        refreshAccessibilityButton()
 
         view.addSubview(makeLabel("撤销", frame: NSRect(x: labelX, y: 378, width: labelW, height: 20), alignment: .right))
         let undoRecorder = ShortcutRecorder(frame: NSRect(x: controlX, y: 374, width: 180, height: 26))
@@ -1661,6 +1800,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         reset.bezelStyle = .rounded
         view.addSubview(reset)
         return view
+    }
+
+    private func refreshAccessibilityButton() {
+        let granted = AXIsProcessTrusted()
+        accessibilityButton?.title = granted
+            ? "✓ 全屏触发已启用（辅助功能权限）"
+            : "开启全屏播放器内触发（辅助功能权限）"
+        accessibilityButton?.isEnabled = !granted
+    }
+
+    @objc private func requestAccessibility() {
+        // 触发系统授权弹窗；授权后安装 HID 层监听，Carbon 热键始终保留
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        let granted = AXIsProcessTrustedWithOptions(options)
+        refreshAccessibilityButton()
+        if granted {
+            installScreenshotEventTap()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.refreshAccessibilityButton()
+            }
+        }
     }
 
     @objc private func undoLimitChanged(_ sender: NSSlider) {

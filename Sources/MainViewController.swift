@@ -134,8 +134,8 @@ final class MainViewController: NSViewController, PaneDelegate, SidebarDelegate,
         globalHomeButton.frame = NSRect(x: w - 70, y: 6, width: 26, height: 26)
         contentContainer.subviews.first?.frame = contentContainer.bounds
         for pane in panes {
-            // 右侧留给全局按钮（回到默认位置 / 设置）
-            pane.toolbarView.frame = NSRect(x: 8, y: 2, width: max(120, w - 140), height: 34)
+            // 右侧仅保留全局按钮（回到默认位置 / 设置）的窄间距
+            pane.toolbarView.frame = NSRect(x: 8, y: 2, width: max(120, w - 86), height: 34)
             pane.layoutToolbarContent()
         }
         applySplitPositionsIfNeeded()
@@ -370,7 +370,6 @@ final class MainViewController: NSViewController, PaneDelegate, SidebarDelegate,
         menu.addItem(title: "恢复图标默认尺寸", action: #selector(resetDefaultSizes), target: self, keyEquivalent: "")
         menu.addItem(title: "批量重命名选中项…", action: #selector(openBulkRename), target: self, keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(title: "保存当前工作区", action: #selector(globalSaveWorkspace), target: self, keyEquivalent: "")
         menu.addItem(title: AppSettings.sidebarVisible ? "隐藏侧边栏" : "显示侧边栏",
                      action: #selector(globalToggleSidebar), target: self, keyEquivalent: "")
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
@@ -381,7 +380,6 @@ final class MainViewController: NSViewController, PaneDelegate, SidebarDelegate,
         goToDefaults()
     }
 
-    @objc private func globalSaveWorkspace() { saveWorkspace() }
     @objc private func globalToggleSidebar() { toggleSidebar() }
 
     /// 首次布局后按比例划分各层 split；用户后续拖动不会被反复重置
@@ -565,21 +563,6 @@ final class MainViewController: NSViewController, PaneDelegate, SidebarDelegate,
     }
 
     func addBookmark() { sidebarDidRequestAddBookmark(sidebar) }
-
-    func saveWorkspace() {
-        let name = Dialog.textInput(title: "保存工作区", message: "当前 \(panes.count) 个窗格的目录会被保存：", defaultValue: "工作区 \(AppSettings.workspaces.count + 1)", confirmTitle: "保存", window: view.window) ?? ""
-        guard !name.isEmpty else { return }
-        var spaces = AppSettings.workspaces
-        spaces.removeAll { $0.name == name }
-        spaces.insert(WorkspaceSnapshot(name: name, paths: panes.map(\.currentURL.path)), at: 0)
-        AppSettings.workspaces = Array(spaces.prefix(10))
-    }
-
-    func restoreWorkspace(_ workspace: WorkspaceSnapshot) {
-        for (index, path) in workspace.paths.enumerated() where index < panes.count {
-            panes[index].navigate(to: URL(fileURLWithPath: path), addToHistory: false)
-        }
-    }
 
     func resetPanes() {
         let defaults = AppSettings.defaultPaths()

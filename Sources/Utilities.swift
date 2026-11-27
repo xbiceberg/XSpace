@@ -210,6 +210,11 @@ final class ScreenshotEditorView: NSView {
 
     // MARK: - 鼠标
 
+    /// 截图过程中点击鼠标右键：取消截图（与 Esc 一致）
+    override func rightMouseDown(with event: NSEvent) {
+        onCancel?()
+    }
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         switch mode {
