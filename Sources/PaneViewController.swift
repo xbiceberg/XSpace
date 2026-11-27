@@ -18,6 +18,10 @@ extension FileClipboard {
 final class PaneScrollView: NSScrollView {
     weak var pane: PaneViewController?
 
+    /// 后台应用里第一次点击窗格区域就把事件送进来（同时激活窗口），
+    /// 避免“第一次点击只激活、第二次点击才选中文件”。
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func scrollWheel(with event: NSEvent) {
         if event.modifierFlags.contains(AppSettings.iconResizeModifier.flags) {
             pane?.activate()
@@ -32,6 +36,7 @@ final class PaneContainerView: NSView {
     weak var pane: PaneViewController?
 
     override var acceptsFirstResponder: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     /// 让整个窗格（含工具栏与空白区）都能接收 fileURL 拖放，避免只能拖到表格行上才生效
     func enableFileDrop() {
@@ -71,6 +76,9 @@ final class IconCollectionView: NSCollectionView {
     weak var pane: PaneViewController?
     /// Windows 风格 Shift 连续多选的锚点（上一次普通点击的 item）
     private var shiftAnchorItem: Int?
+
+    /// 第一次点击就选中文件：后台窗口收到鼠标按下时直接处理，不再被 AppKit 当作“仅激活窗口”吞掉
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     /// 拖到本应用之外时同时允许复制与移动；播放器通常只接受 .copy
     override func draggingSession(_ session: NSDraggingSession,
@@ -157,6 +165,8 @@ final class PaneToolbarButton: TooltipButton {
 final class SortAwareTableHeaderView: NSTableHeaderView {
     var onHeaderClick: ((Int, Int) -> Void)?
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let column = self.column(at: point)
@@ -173,6 +183,9 @@ final class PaneTableView: NSTableView {
     var onContextMenu: ((NSEvent) -> Void)?
     /// Windows 风格 Shift 连续多选的锚点（上一次普通点击的行）
     private var shiftAnchorRow: Int?
+
+    /// 第一次点击就选中行：后台窗口收到鼠标按下时直接处理，不再被 AppKit 当作“仅激活窗口”吞掉
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     /// 拖到本应用之外时同时允许复制与移动；播放器通常只接受 .copy
     override func draggingSession(_ session: NSDraggingSession,
@@ -236,11 +249,22 @@ private final class IconPassthroughTextField: NSTextField {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
+/// 图标格子的底层视图：鼠标第一次落在未激活窗口里也直接接收事件，
+/// 让“点击文件”在激活窗口的同时完成选中，而不是只激活窗口。
+private final class IconTileView: NSView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// 列表单元格同理：点击时直接把事件交给 NSTableView 选中行。
+private final class FileTableCellView: NSTableCellView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 /// 图标格子宽度：只比图标本身宽一点，避免放大图标后图标之间出现大片空白。
-/// 文件名区域靠折行（2~4 行）容纳长名字，而不是把格子拉宽。
+/// 文件名区域靠折行（1~4 行）容纳长名字，而不是把格子拉宽。
 private func iconCellWidth(iconSize: CGFloat) -> CGFloat { iconSize + 20 }
 
-/// 计算文件名在给定宽度下需要几行，最少两行、最多四行（与 Windows 资源管理器一致）
+/// 计算文件名在给定宽度下需要几行：短名字只占一行，长名字最多四行。
 private func iconNameLineCount(_ name: String, width: CGFloat, font: NSFont) -> Int {
     let style = NSMutableParagraphStyle()
     style.lineBreakMode = .byWordWrapping
@@ -249,10 +273,11 @@ private func iconNameLineCount(_ name: String, width: CGFloat, font: NSFont) -> 
         options: [.usesLineFragmentOrigin, .usesFontLeading],
         attributes: [.font: font, .paragraphStyle: style], context: nil)
     let lineHeight = ceil(font.pointSize * 1.32)
-    return min(4, max(2, Int(ceil(rect.height / lineHeight))))
+    return min(4, max(1, Int(ceil(rect.height / lineHeight))))
 }
 
-/// 重命名框的高度按当前文本实际折行数计算（至少两行，不限制最多行数，保证长名字完整显示）
+/// 重命名框的高度按当前文本实际折行数计算：一行文字就是一行高度，
+/// 长名字不限制最多行数，保证完整显示。
 private func renameTextHeight(_ name: String, width: CGFloat, font: NSFont) -> CGFloat {
     let style = NSMutableParagraphStyle()
     style.lineBreakMode = .byWordWrapping
@@ -261,31 +286,35 @@ private func renameTextHeight(_ name: String, width: CGFloat, font: NSFont) -> C
         options: [.usesLineFragmentOrigin, .usesFontLeading],
         attributes: [.font: font, .paragraphStyle: style], context: nil)
     let lineHeight = ceil(font.pointSize * 1.32)
-    return lineHeight * CGFloat(max(2, Int(ceil(rect.height / lineHeight))))
+    return lineHeight * CGFloat(max(1, Int(ceil(rect.height / lineHeight))))
 }
 
 /// 输入框四边留出的最小内边距（只包住文字，不再撑出空白）
 private let renameFieldPadding: CGFloat = 6
 
 final class IconCollectionViewItem: NSCollectionViewItem {
-    private let tileView = NSView()
+    private let tileView = IconTileView()
+    /// 选中态灰色背景：底边贴着文件名标签，不与整行格子等高
+    private let selectionBackgroundView = NSView()
     private let iconImageView = IconPassthroughImageView()
     private let nameLabel = IconPassthroughTextField(labelWithString: "")
     private var iconSizeConstraint: NSLayoutConstraint!
-    /// 文件名区域高度随名字长度在 2~4 行之间变化
+    /// 文件名区域高度随名字长度在 1~4 行之间变化
     private var nameHeightConstraint: NSLayoutConstraint!
     private var paneIndex: Int = 0
 
     override func loadView() {
         view = tileView
-        tileView.wantsLayer = true
-        tileView.layer?.cornerRadius = 6
+
+        selectionBackgroundView.wantsLayer = true
+        selectionBackgroundView.layer?.cornerRadius = 6
+        selectionBackgroundView.translatesAutoresizingMaskIntoConstraints = false
 
         iconImageView.imageScaling = .scaleProportionallyUpOrDown
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
         nameLabel.font = NSFont.systemFont(ofSize: AppSettings.textSize(for: paneIndex))
         nameLabel.alignment = .center
-        // Windows/Finder 风格：默认两行高度，长名字最多四行，按字符折行
+        // 短名字只占一行，长名字最多四行，按字符折行
         nameLabel.lineBreakMode = .byWordWrapping
         nameLabel.maximumNumberOfLines = 4
         nameLabel.cell?.wraps = true
@@ -297,6 +326,7 @@ final class IconCollectionViewItem: NSCollectionViewItem {
         nameLabel.drawsBackground = false
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        tileView.addSubview(selectionBackgroundView)
         tileView.addSubview(iconImageView)
         tileView.addSubview(nameLabel)
         iconSizeConstraint = iconImageView.widthAnchor.constraint(equalToConstant: AppSettings.iconSize(for: paneIndex))
@@ -309,7 +339,12 @@ final class IconCollectionViewItem: NSCollectionViewItem {
             nameLabel.topAnchor.constraint(equalTo: iconImageView.bottomAnchor, constant: 4),
             nameLabel.leadingAnchor.constraint(equalTo: tileView.leadingAnchor, constant: 2),
             nameLabel.trailingAnchor.constraint(equalTo: tileView.trailingAnchor, constant: -2),
-            nameHeightConstraint
+            nameHeightConstraint,
+            // 灰底只包住图标与文件名；同行有长名字时不再向下多出一截空白
+            selectionBackgroundView.topAnchor.constraint(equalTo: tileView.topAnchor, constant: 2),
+            selectionBackgroundView.leadingAnchor.constraint(equalTo: tileView.leadingAnchor, constant: 2),
+            selectionBackgroundView.trailingAnchor.constraint(equalTo: tileView.trailingAnchor, constant: -2),
+            selectionBackgroundView.bottomAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 2)
         ])
     }
 
@@ -324,7 +359,7 @@ final class IconCollectionViewItem: NSCollectionViewItem {
         let textSize = AppSettings.textSize(for: paneIndex)
         let font = NSFont.systemFont(ofSize: textSize)
         nameLabel.font = font
-        // 每个文件按自己的名字长度占 2~4 行，格子高度由 sizeForItemAt 同步
+        // 每个文件按自己的名字长度占 1~4 行，格子高度由 sizeForItemAt 同步
         let lines = iconNameLineCount(item.displayName,
                                       width: iconCellWidth(iconSize: iconSize) - 4,
                                       font: font)
@@ -344,13 +379,13 @@ final class IconCollectionViewItem: NSCollectionViewItem {
     private func updateHighlight() {
         guard isViewLoaded else { return }
         if isSelected {
-            // 参考 Finder：图标块用中性灰圆角高亮，不再绘制整块蓝色边框/填充
-            tileView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
+            // 参考 Finder：图标块用中性灰圆角高亮，底边与蓝色文件名标签对齐
+            selectionBackgroundView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
             // 文件名使用蓝色圆角标签 + 白字
             nameLabel.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
             nameLabel.textColor = .white
         } else {
-            tileView.layer?.backgroundColor = NSColor.clear.cgColor
+            selectionBackgroundView.layer?.backgroundColor = NSColor.clear.cgColor
             nameLabel.layer?.backgroundColor = NSColor.clear.cgColor
             nameLabel.textColor = .labelColor
         }
@@ -816,9 +851,9 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
 
     /// 图标格子：宽度固定为「图标 + 少量文字边距」，剩余空白留在窗格右侧，
     /// 不再把多余宽度均分到每列，避免放大图标后图标之间出现大片空隙。
-    /// 高度 = 图标 + 图标与文字间距 + 文件名行数（2~4）行高 + 上下留白。
+    /// 高度 = 图标 + 图标与文字间距 + 文件名行数（1~4）行高 + 上下留白。
     /// 同一行的所有格子使用相同高度，确保图标在同一水平线上。
-    private func iconCellSize(lines: Int = 2) -> NSSize {
+    private func iconCellSize(lines: Int = 1) -> NSSize {
         let iconSize = AppSettings.iconSize(for: index)
         let textSize = AppSettings.textSize(for: index)
         let lineHeight = ceil(textSize * 1.32)
@@ -835,14 +870,14 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         return max(1, Int(floor((width - inset * 2 + spacing) / (cellWidth + spacing))))
     }
 
-    /// 取某一行中最长文件名所需的行数（2~4），整行共用该高度。
+    /// 取某一行中最长文件名所需的行数（1~4），整行共用该高度。
     private func iconRowLineCount(forItemAt item: Int) -> Int {
         let columns = iconGridColumnCount()
         let rowStart = item - item % columns
         let rowEnd = min(rowStart + columns, displayedItems.count)
         let font = NSFont.systemFont(ofSize: AppSettings.textSize(for: index))
         let textWidth = iconCellWidth(iconSize: AppSettings.iconSize(for: index)) - 4
-        var lines = 2
+        var lines = 1
         for i in rowStart..<rowEnd {
             lines = max(lines, iconNameLineCount(displayedItems[i].displayName, width: textWidth, font: font))
         }
@@ -2196,13 +2231,13 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         // 避免图标/文字宽度沿用旧列的数据。
         let cellID = column.identifier
         let cell = tableView.makeView(withIdentifier: cellID, owner: self) as? NSTableCellView ?? {
-            let newCell = NSTableCellView(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+            let newCell = FileTableCellView(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
             newCell.identifier = cellID
-            let imageView = NSImageView(frame: NSRect(x: 4, y: 2, width: 18, height: 18))
+            let imageView = IconPassthroughImageView(frame: NSRect(x: 4, y: 2, width: 18, height: 18))
             imageView.imageScaling = .scaleProportionallyUpOrDown
             newCell.addSubview(imageView)
             newCell.imageView = imageView
-            let text = NSTextField(labelWithString: "")
+            let text = IconPassthroughTextField(labelWithString: "")
             text.frame = NSRect(x: 26, y: 3, width: 170, height: 18)
             text.lineBreakMode = .byTruncatingMiddle
             text.autoresizingMask = [.width]   // 列宽变化时文字域跟着单元格伸缩

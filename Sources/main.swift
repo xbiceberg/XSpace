@@ -7,18 +7,27 @@ import Carbon.HIToolbox
 
 /// 偏好设置里用于录制快捷键的控件：点击后按下组合键即可保存
 final class ShortcutRecorder: NSView {
-    enum Kind { case screenshot, undo }
+    enum Kind { case screenshot, undo, selectAll }
 
     private let label = NSTextField(labelWithString: "")
     private var readyToRecord = false
     var kind: Kind = .screenshot { didSet { updateDisplay() } }
 
-    /// 当前控件对应的快捷键：截图或撤销
+    /// 当前控件对应的快捷键：截图 / 撤销 / 全选
     private var shortcut: KeyShortcut {
-        get { kind == .screenshot ? AppSettings.screenshotShortcut : AppSettings.undoShortcut }
+        get {
+            switch kind {
+            case .screenshot: return AppSettings.screenshotShortcut
+            case .undo: return AppSettings.undoShortcut
+            case .selectAll: return AppSettings.selectAllShortcut
+            }
+        }
         set {
-            if kind == .screenshot { AppSettings.screenshotShortcut = newValue }
-            else { AppSettings.undoShortcut = newValue }
+            switch kind {
+            case .screenshot: AppSettings.screenshotShortcut = newValue
+            case .undo: AppSettings.undoShortcut = newValue
+            case .selectAll: AppSettings.selectAllShortcut = newValue
+            }
         }
     }
 
@@ -79,10 +88,20 @@ final class ShortcutRecorder: NSView {
         let character = (event.charactersIgnoringModifiers?.uppercased().first).map(String.init)
             ?? Self.keyName(for: event.keyCode)
         let newShortcut = KeyShortcut(keyCode: event.keyCode, modifiers: flags.rawValue, keyTitle: character)
-        let other = kind == .screenshot ? AppSettings.undoShortcut : AppSettings.screenshotShortcut
-        if newShortcut.conflicts(with: other) {
+        // 三个可自定义快捷键之间统一做冲突检查
+        let others: [(Kind, KeyShortcut)] = [
+            (.screenshot, AppSettings.screenshotShortcut),
+            (.undo, AppSettings.undoShortcut),
+            (.selectAll, AppSettings.selectAllShortcut)
+        ]
+        if let conflict = others.first(where: { $0.0 != kind && newShortcut.conflicts(with: $0.1) }) {
             NSSound.beep()
-            let owner = kind == .screenshot ? "撤销" : "截图"
+            let owner: String
+            switch conflict.0 {
+            case .screenshot: owner = "截图"
+            case .undo: owner = "撤销"
+            case .selectAll: owner = "全选"
+            }
             Dialog.alert(title: "快捷键冲突", message: "该组合键已分配给「\(owner)」，请换一个。", window: window)
             return
         }
@@ -690,9 +709,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var modifierRecorder: ModifierRecorder?
     private var screenshotRecorder: ShortcutRecorder?
     private var undoRecorder: ShortcutRecorder?
+    private var selectAllRecorder: ShortcutRecorder?
     private var undoLimitSlider: NSSlider?
     private var undoLimitLabel: NSTextField?
     private weak var undoMenuItem: NSMenuItem?
+    private weak var selectAllMenuItem: NSMenuItem?
     private var screenshotDirectoryLabel: NSTextField?
     private var accessibilityButton: NSButton?
     /// 「布局」页的单选按钮，切换时手动互斥
@@ -855,6 +876,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 controller.undo()
                 return nil
             }
+            // 自定义「当前窗口全选」快捷键：默认 ⌘A，可在设置 → 快捷键中修改。
+            // 只在文件浏览器区域生效；文字编辑态已在上面交还给系统（⌘A 全选输入框文字）。
+            let selectAll = AppSettings.selectAllShortcut
+            let shortcutMask: NSEvent.ModifierFlags = [.command, .option, .shift, .control]
+            if inFileBrowser,
+               event.keyCode == selectAll.keyCode,
+               flags.intersection(shortcutMask).rawValue == selectAll.flags.intersection(shortcutMask).rawValue {
+                controller.selectAll()
+                return nil
+            }
+
             if flags.contains(.command), inFileBrowser {
                 switch event.charactersIgnoringModifiers {
                 case "[": controller.goBack(); return nil
@@ -862,11 +894,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 case "l": controller.goToPath(); return nil
                 case "f": controller.focusSearch(); return nil
                 // 文件操作快捷键集中在这里处理（已从菜单 keyEquivalent 移除）。
-                // inFileBrowser 为 true 才走到这里：焦点确实在文件列表，⌘C/⌘V/⌘X/⌘A 只作用于文件。
+                // inFileBrowser 为 true 才走到这里：焦点确实在文件列表，⌘C/⌘V/⌘X 只作用于文件。
+                // ⌘A 已改为可自定义，走上面的 selectAll 分支。
                 case "c": controller.copySelected(); return nil
                 case "x": controller.cutSelected(); return nil
                 case "v": controller.pasteHere(); return nil
-                case "a": controller.selectAll(); return nil
                 default: break
                 }
                 if flags.contains(.shift), event.charactersIgnoringModifiers == "N" {
@@ -902,6 +934,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             self,
             selector: #selector(undoSettingsDidChange),
             name: .xspaceUndoSettingsChanged,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(selectAllShortcutDidChange),
+            name: .xspaceSelectAllShortcutChanged,
             object: nil
         )
 
@@ -1023,6 +1061,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         screenshotRecorder?.refresh()
         undoLimitSlider?.intValue = Int32(AppSettings.undoLimit)
         undoLimitLabel?.stringValue = "\(AppSettings.undoLimit)"
+    }
+
+    /// 全选快捷键变化：菜单显示与设置页录制控件同步刷新
+    @objc private func selectAllShortcutDidChange() {
+        selectAllMenuItem?.title = "全选    \(AppSettings.selectAllShortcut.displayString)"
+        selectAllRecorder?.refresh()
+        screenshotRecorder?.refresh()
+        undoRecorder?.refresh()
     }
 
     /// 截图热键的统一入口，带去重：Carbon 与 CGEventTap 两条通道可能同时命中同一次按键，
@@ -1311,7 +1357,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         add("剪切    ⌘X", #selector(cutSelected), "", to: menu)
         add("复制    ⌘C", #selector(copySelected), "", to: menu)
         add("粘贴到此处    ⌘V", #selector(pasteHere), "", to: menu)
-        add("全选    ⌘A", #selector(selectAll), "", to: menu)
+        selectAllMenuItem = add("全选    \(AppSettings.selectAllShortcut.displayString)",
+                                #selector(selectAll), "", to: menu)
         menu.addItem(.separator())
         add("重命名", #selector(renameSelected), "", to: menu)
         add("移到废纸篓", #selector(trashSelected), "", to: menu)
@@ -1726,8 +1773,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let controlX: CGFloat = 116
         let titleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
 
-        // 可录制快捷键
-        view.addSubview(SettingCardView(frame: NSRect(x: cardX, y: 348, width: cardW, height: 136)))
+        // 可录制快捷键（截图 / 撤销 / 当前窗口全选）
+        view.addSubview(SettingCardView(frame: NSRect(x: cardX, y: 320, width: cardW, height: 164)))
         let title = makeLabel("快捷键", frame: NSRect(x: labelX, y: 458, width: labelW, height: 20), alignment: .right)
         title.font = titleFont
         view.addSubview(title)
@@ -1736,72 +1783,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         hint.textColor = .secondaryLabelColor
         view.addSubview(hint)
 
-        view.addSubview(makeLabel("截图", frame: NSRect(x: labelX, y: 418, width: labelW, height: 20), alignment: .right))
-        let screenshotRecorder = ShortcutRecorder(frame: NSRect(x: controlX, y: 414, width: 180, height: 26))
+        view.addSubview(makeLabel("截图", frame: NSRect(x: labelX, y: 426, width: labelW, height: 20), alignment: .right))
+        let screenshotRecorder = ShortcutRecorder(frame: NSRect(x: controlX, y: 422, width: 180, height: 26))
         screenshotRecorder.kind = .screenshot
         view.addSubview(screenshotRecorder)
         self.screenshotRecorder = screenshotRecorder
-        let screenshotNote = makeLabel("全局生效，全屏播放器内也可触发", frame: NSRect(x: 310, y: 418, width: 220, height: 20))
+        let screenshotNote = makeLabel("全局生效，全屏播放器内也可触发", frame: NSRect(x: 310, y: 426, width: 220, height: 20))
         screenshotNote.font = NSFont.systemFont(ofSize: 11)
         screenshotNote.textColor = .tertiaryLabelColor
         view.addSubview(screenshotNote)
 
+        view.addSubview(makeLabel("撤销", frame: NSRect(x: labelX, y: 392, width: labelW, height: 20), alignment: .right))
+        let undoRecorder = ShortcutRecorder(frame: NSRect(x: controlX, y: 388, width: 180, height: 26))
+        undoRecorder.kind = .undo
+        view.addSubview(undoRecorder)
+        self.undoRecorder = undoRecorder
+        let undoNote = makeLabel("撤销最近一次文件操作，默认 ⌘Z", frame: NSRect(x: 310, y: 392, width: 220, height: 20))
+        undoNote.font = NSFont.systemFont(ofSize: 11)
+        undoNote.textColor = .tertiaryLabelColor
+        view.addSubview(undoNote)
+
+        view.addSubview(makeLabel("当前窗口全选", frame: NSRect(x: labelX - 8, y: 358, width: labelW + 8, height: 20), alignment: .right))
+        let selectAllRecorder = ShortcutRecorder(frame: NSRect(x: controlX, y: 354, width: 180, height: 26))
+        selectAllRecorder.kind = .selectAll
+        view.addSubview(selectAllRecorder)
+        self.selectAllRecorder = selectAllRecorder
+        let selectAllNote = makeLabel("选中当前窗格全部文件，默认 ⌘A", frame: NSRect(x: 310, y: 358, width: 220, height: 20))
+        selectAllNote.font = NSFont.systemFont(ofSize: 11)
+        selectAllNote.textColor = .tertiaryLabelColor
+        view.addSubview(selectAllNote)
+
         let accessButton = NSButton(title: "", target: self, action: #selector(requestAccessibility))
-        accessButton.frame = NSRect(x: controlX, y: 350, width: 310, height: 24)
+        accessButton.frame = NSRect(x: controlX, y: 324, width: 310, height: 24)
         accessButton.bezelStyle = .rounded
         accessButton.font = NSFont.systemFont(ofSize: 11)
         view.addSubview(accessButton)
         self.accessibilityButton = accessButton
         refreshAccessibilityButton()
 
-        view.addSubview(makeLabel("撤销", frame: NSRect(x: labelX, y: 378, width: labelW, height: 20), alignment: .right))
-        let undoRecorder = ShortcutRecorder(frame: NSRect(x: controlX, y: 374, width: 180, height: 26))
-        undoRecorder.kind = .undo
-        view.addSubview(undoRecorder)
-        self.undoRecorder = undoRecorder
-        let undoNote = makeLabel("撤销最近一次文件操作，默认 ⌘Z", frame: NSRect(x: 310, y: 378, width: 220, height: 20))
-        undoNote.font = NSFont.systemFont(ofSize: 11)
-        undoNote.textColor = .tertiaryLabelColor
-        view.addSubview(undoNote)
-
         // 撤销步数
-        view.addSubview(SettingCardView(frame: NSRect(x: cardX, y: 226, width: cardW, height: 108)))
-        let undoTitle = makeLabel("撤销历史", frame: NSRect(x: labelX, y: 304, width: labelW, height: 20), alignment: .right)
+        view.addSubview(SettingCardView(frame: NSRect(x: cardX, y: 204, width: cardW, height: 108)))
+        let undoTitle = makeLabel("撤销历史", frame: NSRect(x: labelX, y: 282, width: labelW, height: 20), alignment: .right)
         undoTitle.font = titleFont
         view.addSubview(undoTitle)
-        view.addSubview(makeLabel("最多步数", frame: NSRect(x: labelX, y: 270, width: labelW, height: 20), alignment: .right))
+        view.addSubview(makeLabel("最多步数", frame: NSRect(x: labelX, y: 248, width: labelW, height: 20), alignment: .right))
         let slider = makeSlider(min: 1, max: 20, value: Double(AppSettings.undoLimit),
-                                frame: NSRect(x: controlX, y: 268, width: 260, height: 20),
+                                frame: NSRect(x: controlX, y: 246, width: 260, height: 20),
                                 action: #selector(undoLimitChanged(_:)), tag: 0)
         slider.isContinuous = true
         view.addSubview(slider)
         undoLimitSlider = slider
-        let value = makeValueLabel(frame: NSRect(x: 392, y: 270, width: 44, height: 20))
+        let value = makeValueLabel(frame: NSRect(x: 392, y: 248, width: 44, height: 20))
         value.stringValue = "\(AppSettings.undoLimit)"
         view.addSubview(value)
         undoLimitLabel = value
-        let limitHint = makeLabel("默认 5 步，最多 20 步；修改后立即生效", frame: NSRect(x: controlX, y: 244, width: 400, height: 20))
+        let limitHint = makeLabel("默认 5 步，最多 20 步；修改后立即生效", frame: NSRect(x: controlX, y: 222, width: 400, height: 20))
         limitHint.font = NSFont.systemFont(ofSize: 11)
         limitHint.textColor = .secondaryLabelColor
         view.addSubview(limitHint)
 
         // 图标缩放修饰键
-        view.addSubview(SettingCardView(frame: NSRect(x: cardX, y: 72, width: cardW, height: 138)))
-        let zoomTitle = makeLabel("图标缩放", frame: NSRect(x: labelX, y: 180, width: labelW, height: 20), alignment: .right)
+        view.addSubview(SettingCardView(frame: NSRect(x: cardX, y: 52, width: cardW, height: 138)))
+        let zoomTitle = makeLabel("图标缩放", frame: NSRect(x: labelX, y: 160, width: labelW, height: 20), alignment: .right)
         zoomTitle.font = titleFont
         view.addSubview(zoomTitle)
-        view.addSubview(makeLabel("滚轮修饰键", frame: NSRect(x: labelX, y: 148, width: labelW, height: 20), alignment: .right))
-        let modifier = ModifierRecorder(frame: NSRect(x: controlX, y: 144, width: 180, height: 26))
+        view.addSubview(makeLabel("滚轮修饰键", frame: NSRect(x: labelX, y: 128, width: labelW, height: 20), alignment: .right))
+        let modifier = ModifierRecorder(frame: NSRect(x: controlX, y: 124, width: 180, height: 26))
         view.addSubview(modifier)
         modifierRecorder = modifier
         let modifierHint = makeLabel("点击方框后按下 ⌃ / ⌥ / ⇧ / ⌘ 即可更换；在窗格内按住它滚动滚轮可缩放图标",
-                                     frame: NSRect(x: controlX, y: 120, width: 400, height: 20))
+                                     frame: NSRect(x: controlX, y: 100, width: 400, height: 20))
         modifierHint.font = NSFont.systemFont(ofSize: 11)
         modifierHint.textColor = .secondaryLabelColor
         view.addSubview(modifierHint)
 
         let reset = NSButton(title: "恢复默认快捷键", target: self, action: #selector(resetShortcutDefaults))
-        reset.frame = NSRect(x: controlX, y: 84, width: 130, height: 26)
+        reset.frame = NSRect(x: controlX, y: 64, width: 130, height: 26)
         reset.bezelStyle = .rounded
         view.addSubview(reset)
         return view
@@ -1836,10 +1893,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     @objc private func resetShortcutDefaults() {
         AppSettings.screenshotShortcut = .defaultScreenshot
         AppSettings.undoShortcut = .defaultUndo
+        AppSettings.selectAllShortcut = .defaultSelectAll
         AppSettings.iconResizeModifier = .control
         AppSettings.undoLimit = 5
         screenshotRecorder?.refresh()
         undoRecorder?.refresh()
+        selectAllRecorder?.refresh()
         modifierRecorder?.refresh()
         undoLimitSlider?.intValue = 5
         undoLimitLabel?.stringValue = "5"

@@ -20,6 +20,13 @@ struct KeyShortcut: Codable, Equatable {
         keyTitle: "Z"
     )
 
+    /// 当前窗口全选默认 ⌘A
+    static let defaultSelectAll = KeyShortcut(
+        keyCode: 0, // 美式键盘 A
+        modifiers: NSEvent.ModifierFlags.command.rawValue,
+        keyTitle: "A"
+    )
+
     var flags: NSEvent.ModifierFlags { NSEvent.ModifierFlags(rawValue: modifiers) }
 
     /// 菜单里可用的 keyEquivalent（单字符按键；功能键交给键盘监听处理）
@@ -227,6 +234,7 @@ enum AppSettings {
     private static let iconResizeModifierKey = "qspacelite.iconResizeModifier"
     private static let screenshotShortcutKey = "qspacelite.screenshotShortcut"
     private static let undoShortcutKey = "qspacelite.undoShortcut"
+    private static let selectAllShortcutKey = "qspacelite.selectAllShortcut"
     private static let undoLimitKey = "qspacelite.undoLimit"
     private static let screenshotDirectoryKey = "qspacelite.screenshotDirectory"
     private static let globalWallpaperKey = "qspacelite.globalWallpaper"
@@ -487,6 +495,23 @@ enum AppSettings {
         }
     }
 
+    /// 当前窗口全选快捷键，默认 ⌘A；仅在文件浏览器区域生效，文字编辑态交给系统
+    static var selectAllShortcut: KeyShortcut {
+        get {
+            guard let data = defaults.data(forKey: selectAllShortcutKey),
+                  let shortcut = try? JSONDecoder().decode(KeyShortcut.self, from: data) else {
+                return .defaultSelectAll
+            }
+            return shortcut
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue) {
+                defaults.set(data, forKey: selectAllShortcutKey)
+            }
+            NotificationCenter.default.post(name: .xspaceSelectAllShortcutChanged, object: nil)
+        }
+    }
+
     /// 撤销栈保留的最大步数，默认 5，范围 1~20
     static var undoLimit: Int {
         get {
@@ -739,5 +764,6 @@ extension Notification.Name {
     static let xspaceLayoutChanged = Notification.Name("xspace.layoutChanged")
     static let xspaceUndoStackChanged = Notification.Name("xspace.undoStackChanged")
     static let xspaceUndoSettingsChanged = Notification.Name("xspace.undoSettingsChanged")
+    static let xspaceSelectAllShortcutChanged = Notification.Name("xspace.selectAllShortcutChanged")
     static let xspaceFileIconsChanged = Notification.Name("xspace.fileIconsChanged")
 }
