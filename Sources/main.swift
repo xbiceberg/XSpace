@@ -774,7 +774,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         _ = AppSettings.contextMenuItems
         buildMainMenu()
         _ = createWindow()
-        NSApp.activate(ignoringOtherApps: true)
+        // 登录项自启：完全隐藏到后台（Dock 最小化区不留窗口缩略图），不抢前台焦点。
+        // 手动打开则正常置前。
+        let launchedInBackground = CommandLine.arguments.contains("--launch-background")
+        if launchedInBackground {
+            hideToBackground()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        // 7-Zip 弹窗独立 Dock 图标：监听辅助进程的聚焦请求
+        SevenZipDockIcon.install()
         // 光标主题：用户开启后启动时自动恢复上次应用的 .cape
         MousecapeThemes.autoApplyIfNeeded()
 
@@ -1171,7 +1180,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     @objc func showMainWindow() {
+        // 自启后 App 处于隐藏状态，先 unhide 才能重新显示窗口
+        NSApp.unhide(nil)
         if let window = mainWindow ?? controllers.keys.first {
+            if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)
         } else {
             _ = createWindow()

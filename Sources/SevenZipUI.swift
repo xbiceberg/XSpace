@@ -86,7 +86,9 @@ final class SevenZipCompressPanel: NSObject {
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.center()
+        SevenZipDockIcon.show(for: window)
         NSApp.runModal(for: window)
+        SevenZipDockIcon.hide(for: window)
     }
 
     private func buildWindow() {
@@ -217,7 +219,9 @@ final class SevenZipExtractPanel: NSObject {
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.center()
+        SevenZipDockIcon.show(for: window)
         NSApp.runModal(for: window)
+        SevenZipDockIcon.hide(for: window)
     }
 
     private func buildWindow() {
@@ -314,11 +318,22 @@ final class ArchiveBrowserController: NSWindowController, NSTableViewDataSource,
         window.title = "7-Zip — \(archive.lastPathComponent)"
         super.init(window: window)
         window.delegate = self
+        // 压缩包浏览窗口在屏幕正中显示
+        centerOnScreen()
         buildUI()
         Self.openBrowsers.append(self)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 将窗口精确放到屏幕几何中心（Apple 的 center() 会避开菜单栏/Dock，视觉上偏上）。
+    private func centerOnScreen() {
+        guard let window, let screen = window.screen ?? NSScreen.main else { return }
+        let frame = window.frame
+        let screenFrame = screen.frame
+        window.setFrameOrigin(NSPoint(x: screenFrame.midX - frame.width / 2,
+                                      y: screenFrame.midY - frame.height / 2))
+    }
 
     deinit {
         try? FileManager.default.removeItem(at: tempRoot)
@@ -391,7 +406,9 @@ final class ArchiveBrowserController: NSWindowController, NSTableViewDataSource,
     func open(completion: ((Bool, String) -> Void)? = nil) {
         showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+        centerOnScreen()
         window?.makeKeyAndOrderFront(nil)
+        if let window { SevenZipDockIcon.show(for: window) }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let result = SevenZip.extract(self.archive, to: self.tempRoot)
@@ -534,6 +551,7 @@ final class ArchiveBrowserController: NSWindowController, NSTableViewDataSource,
     }
 
     func windowWillClose(_ notification: Notification) {
+        if let window { SevenZipDockIcon.hide(for: window) }
         Self.openBrowsers.removeAll { $0 === self }
     }
 }

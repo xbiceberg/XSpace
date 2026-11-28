@@ -2,7 +2,8 @@ import Foundation
 import Darwin
 
 /// 开机自启动：通过用户级 LaunchAgent 在登录后自动运行 XSpace。
-/// 采用 `open -a` 启动已安装的 App，保证在用户 GUI 会话里正常运行。
+/// 直接启动已安装 App 的可执行文件并带 `--launch-background` 参数，
+/// 保证登录后完全隐藏到后台、不在 Dock 最小化区留下窗口缩略图。
 enum LaunchAtLogin {
     static let label = "com.workbuddy.xspace.startup"
 
@@ -23,7 +24,8 @@ enum LaunchAtLogin {
             guard FileManager.default.fileExists(atPath: appPath) else { return false }
             let plist: [String: Any] = [
                 "Label": label,
-                "ProgramArguments": ["/usr/bin/open", "-a", appPath],
+                // 直接启动二进制并传标记：`open -a` 会激活 App，导致刚最小化的窗口被重新显示
+                "ProgramArguments": [appPath + "/Contents/MacOS/XSpace", "--launch-background"],
                 "RunAtLoad": true,
                 "KeepAlive": false,
                 "ProcessType": "Interactive"
