@@ -365,7 +365,7 @@ final class MousecapeSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         }
         let skippedText = result.skipped > 0 ? "（跳过 \(result.skipped) 个缺失文件）" : ""
         Dialog.alert(title: "转换完成",
-                     message: "已生成主题“\(result.themeName)”：\(result.cursorCount) 种光标、\(result.frameCount) 帧动画\(skippedText)。可在列表中选中并应用。")
+                     message: "已生成主题“\(result.themeName)”：\(result.cursorCount) 种光标、\(result.frameCount) 帧动画，写入 \(result.identifierCount) 个 macOS 光标标识\(skippedText)。可在列表中选中并应用。")
     }
 
     @objc private func deleteTheme() {

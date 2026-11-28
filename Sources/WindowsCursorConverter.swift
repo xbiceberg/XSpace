@@ -8,8 +8,12 @@ enum WindowsCursorConverter {
     struct ConversionResult {
         let url: URL
         let themeName: String
+        /// 源 Windows 光标种类数（未展开 macOS 别名）
         let cursorCount: Int
+        /// 源动画帧总数（未展开 macOS 别名）
         let frameCount: Int
+        /// 写入 .cape 的 macOS 标识数（含别名）
+        let identifierCount: Int
         var skipped: Int = 0
     }
 
@@ -25,6 +29,8 @@ enum WindowsCursorConverter {
     /// 把若干个 .ani/.cur 合并为一个 .cape 主题
     static func convert(files: [URL], themeName: String? = nil) throws -> ConversionResult {
         var cursors: [String: [String: Any]] = [:]
+        var sourceIdentifiers = Set<String>()
+        var sourceFrames = 0
 
         for file in files {
             let parsed = file.pathExtension.lowercased() == "cur"
@@ -32,12 +38,19 @@ enum WindowsCursorConverter {
                 : parseANI(file)
             guard let parsed else { continue }
             let identifier = macOSIdentifier(for: file.deletingPathExtension().lastPathComponent)
-            cursors[identifier] = parsed.dictionary
+            if sourceIdentifiers.insert(identifier).inserted {
+                sourceFrames += parsed.frameCount
+            }
+            for key in macOSIdentifiers(includingAliasesOf: identifier) {
+                cursors[key] = parsed.dictionary
+            }
         }
         guard !cursors.isEmpty else { throw ConverterError.unsupportedFile }
 
         let name = (themeName ?? files.first?.deletingPathExtension().lastPathComponent ?? "Windows 光标")
-        return try writeTheme(name: name, author: "Windows 光标导入", cursors: cursors, skipped: 0)
+        return try writeTheme(name: name, author: "Windows 光标导入", cursors: cursors,
+                              sourceCursorCount: sourceIdentifiers.count, sourceFrames: sourceFrames,
+                              skipped: 0)
     }
 
     /// 按 Windows 光标安装 INF（如“~右键安装.inf”）的 Wreg 注册项批量转换。
@@ -89,6 +102,8 @@ enum WindowsCursorConverter {
 
         let name = strings["scheme_name"] ?? inf.deletingPathExtension().lastPathComponent
         var cursors: [String: [String: Any]] = [:]
+        var sourceIdentifiers = Set<String>()
+        var sourceFrames = 0
         var skipped = 0
 
         for entry in roleValues {
@@ -100,23 +115,31 @@ enum WindowsCursorConverter {
             }
             let filename = file.deletingPathExtension().lastPathComponent
             let identifier = identifier(forWindowsRole: entry.role, filename: filename)
-            cursors[identifier] = parsed.dictionary
+            if sourceIdentifiers.insert(identifier).inserted {
+                sourceFrames += parsed.frameCount
+            }
+            for key in macOSIdentifiers(includingAliasesOf: identifier) {
+                cursors[key] = parsed.dictionary
+            }
         }
         guard !cursors.isEmpty else { throw ConverterError.noCursorFiles }
 
         return try writeTheme(name: name, author: "Windows 光标导入 · INF", cursors: cursors,
+                              sourceCursorCount: sourceIdentifiers.count, sourceFrames: sourceFrames,
                               skipped: skipped)
     }
 
     private static func writeTheme(name: String, author: String,
-                                   cursors: [String: [String: Any]], skipped: Int) throws -> ConversionResult {
+                                   cursors: [String: [String: Any]],
+                                   sourceCursorCount: Int, sourceFrames: Int,
+                                   skipped: Int) throws -> ConversionResult {
         let cape: [String: Any] = [
             "CapeName": name,
             "Author": author,
             "Identifier": "local.ani." + sanitized(name),
-            "Version": 2,
-            "MinimumVersion": 2,
-            "HiDPI": false,
+            "Version": 2.0,
+            "MinimumVersion": 2.0,
+            "HiDPI": true,
             "Cloud": false,
             "Cursors": cursors
         ]
@@ -132,12 +155,9 @@ enum WindowsCursorConverter {
         guard (cape as NSDictionary).write(to: destination, atomically: true) else {
             throw ConverterError.writeFailed
         }
-        let cursorCount = cursors.count
-        let frameCount = cursors.values.reduce(0) { total, cursor in
-            total + ((cursor["FrameCount"] as? Int) ?? 0)
-        }
         return ConversionResult(url: destination, themeName: name,
-                                cursorCount: cursorCount, frameCount: frameCount, skipped: skipped)
+                                cursorCount: sourceCursorCount, frameCount: sourceFrames,
+                                identifierCount: cursors.count, skipped: skipped)
     }
 
     enum ConverterError: LocalizedError {
@@ -221,6 +241,9 @@ enum WindowsCursorConverter {
         let pointsWide = max(1, Int(round(Double(first.pixelWidth) / Double(divisor))))
         let pointsHigh = max(1, Int(round(Double(first.pixelHeight) / Double(divisor))))
         let duration = min(1.0, max(0.01, Double(displayRate) / 60.0))
+        // Mousecape 的动画帧放在一张纵向 sprite sheet 里，而不是每个 representation 一帧。
+        // 统一成 2x（32pt → 64px），与 Mousecape 的 HiDPI cape 格式一致。
+        let representations = spriteSheetPNG(images, frameSize: pointsWide * 2).map { [$0] } ?? images
 
         let dictionary: [String: Any] = [
             "FrameCount": images.count,
@@ -229,7 +252,7 @@ enum WindowsCursorConverter {
             "HotSpotY": Double(first.hotspotY) / Double(divisor),
             "PointsWide": pointsWide,
             "PointsHigh": pointsHigh,
-            "Representations": images
+            "Representations": representations
         ]
         return ParsedCursor(dictionary: dictionary, frameCount: images.count)
     }
@@ -239,14 +262,17 @@ enum WindowsCursorConverter {
         guard let data = try? Data(contentsOf: url),
               let frame = parseCUR(data), let png = frame.png else { return nil }
         let divisor = max(1, Int(round(Double(frame.pixelWidth) / 32.0)))
+        let pointsWide = max(1, Int(round(Double(frame.pixelWidth) / Double(divisor))))
+        let pointsHigh = max(1, Int(round(Double(frame.pixelHeight) / Double(divisor))))
+        let representations = spriteSheetPNG([png], frameSize: pointsWide * 2).map { [$0] } ?? [png]
         let dictionary: [String: Any] = [
             "FrameCount": 1,
             "FrameDuration": 0.1,
             "HotSpotX": Double(frame.hotspotX) / Double(divisor),
             "HotSpotY": Double(frame.hotspotY) / Double(divisor),
-            "PointsWide": max(1, Int(round(Double(frame.pixelWidth) / Double(divisor)))),
-            "PointsHigh": max(1, Int(round(Double(frame.pixelHeight) / Double(divisor)))),
-            "Representations": [png]
+            "PointsWide": pointsWide,
+            "PointsHigh": pointsHigh,
+            "Representations": representations
         ]
         return ParsedCursor(dictionary: dictionary, frameCount: 1)
     }
@@ -472,6 +498,87 @@ enum WindowsCursorConverter {
 
     private static func identifier(forWindowsRole role: String, filename: String) -> String {
         windowsRoleIdentifiers[role.lowercased()] ?? macOSIdentifier(for: filename)
+    }
+
+    /// 一个 Windows 光标在 macOS 上对应多个等效标识；只写主标识会让其它上下文回落系统默认，
+    /// 看起来就是“应用后光标异常”。这里按 Mousecape 主题的常见分组展开。
+    private static let macOSAliasGroups: [String: [String]] = [
+        "com.apple.coregraphics.Arrow": [
+            "com.apple.coregraphics.Arrow", "com.apple.coregraphics.ArrowCtx",
+            "com.apple.coregraphics.ArrowS", "com.apple.cursor.24"
+        ],
+        "com.apple.coregraphics.IBeam": [
+            "com.apple.coregraphics.IBeam", "com.apple.coregraphics.IBeamS",
+            "com.apple.coregraphics.IBeamXOR", "com.apple.cursor.26"
+        ],
+        "com.apple.coregraphics.Wait": ["com.apple.coregraphics.Wait"],
+        "com.apple.coregraphics.Move": ["com.apple.coregraphics.Move", "com.apple.cursor.39"],
+        "com.apple.cursor.2": ["com.apple.cursor.2", "com.apple.cursor.13"],
+        "com.apple.cursor.3": ["com.apple.cursor.3"],
+        "com.apple.cursor.4": ["com.apple.cursor.4", "com.apple.cursor.14",
+                               "com.apple.cursor.15", "com.apple.cursor.16"],
+        "com.apple.cursor.7": ["com.apple.cursor.7", "com.apple.cursor.8",
+                               "com.apple.cursor.20", "com.apple.cursor.41"],
+        "com.apple.cursor.10": ["com.apple.cursor.10"],
+        "com.apple.cursor.13": ["com.apple.cursor.2", "com.apple.cursor.13"],
+        "com.apple.cursor.16": ["com.apple.cursor.4", "com.apple.cursor.14",
+                                "com.apple.cursor.15", "com.apple.cursor.16"],
+        "com.apple.cursor.19": ["com.apple.cursor.17", "com.apple.cursor.18",
+                                "com.apple.cursor.19", "com.apple.cursor.27",
+                                "com.apple.cursor.28", "com.apple.cursor.38"],
+        "com.apple.cursor.23": ["com.apple.cursor.21", "com.apple.cursor.22",
+                                "com.apple.cursor.23", "com.apple.cursor.31",
+                                "com.apple.cursor.32", "com.apple.cursor.36"],
+        "com.apple.cursor.30": ["com.apple.cursor.29", "com.apple.cursor.30",
+                                "com.apple.cursor.37"],
+        "com.apple.cursor.34": ["com.apple.cursor.33", "com.apple.cursor.34",
+                                "com.apple.cursor.35"],
+        "com.apple.cursor.40": ["com.apple.cursor.40"]
+    ]
+
+    private static func macOSIdentifiers(includingAliasesOf identifier: String) -> [String] {
+        macOSAliasGroups[identifier] ?? [identifier]
+    }
+
+    /// 把各帧缩放为 2x 后纵向拼成一张 sprite sheet，Mousecape 用一张图 + FrameCount 表示动画。
+    private static func spriteSheetPNG(_ frames: [Data], frameSize: Int) -> Data? {
+        guard !frames.isEmpty, frameSize > 0 else { return nil }
+        let reps = frames.compactMap { resizedBitmap($0, to: frameSize) }
+        guard reps.count == frames.count else { return nil }
+
+        let frameBytes = frameSize * frameSize * 4
+        guard let sheet = NSBitmapImageRep(bitmapDataPlanes: nil,
+                                           pixelsWide: frameSize,
+                                           pixelsHigh: frameSize * reps.count,
+                                           bitsPerSample: 8, samplesPerPixel: 4,
+                                           hasAlpha: true, isPlanar: false,
+                                           colorSpaceName: .deviceRGB,
+                                           bytesPerRow: frameSize * 4,
+                                           bitsPerPixel: 32),
+              let destination = sheet.bitmapData else { return nil }
+
+        for (index, rep) in reps.enumerated() {
+            guard let source = rep.bitmapData else { return nil }
+            destination.advanced(by: index * frameBytes).update(from: source, count: frameBytes)
+        }
+        return sheet.representation(using: .png, properties: [:])
+    }
+
+    private static func resizedBitmap(_ png: Data, to size: Int) -> NSBitmapImageRep? {
+        guard let image = NSImage(data: png),
+              let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
+                                         pixelsWide: size, pixelsHigh: size,
+                                         bitsPerSample: 8, samplesPerPixel: 4,
+                                         hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB,
+                                         bytesPerRow: size * 4,
+                                         bitsPerPixel: 32),
+              let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        image.draw(in: NSRect(x: 0, y: 0, width: size, height: size))
+        NSGraphicsContext.restoreGraphicsState()
+        return rep
     }
 
     private static func macOSIdentifier(for filename: String) -> String {
