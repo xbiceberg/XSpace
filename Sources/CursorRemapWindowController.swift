@@ -10,6 +10,7 @@ final class CursorRemapWindowController: NSWindowController, NSTableViewDataSour
     private let tableView = NSTableView(frame: .zero)
     private var onSaved: (() -> Void)?
     private var onClosed: (() -> Void)?
+    private let previewCache = NSCache<NSString, NSImage>()
 
     init(theme: MousecapeTheme, onSaved: (() -> Void)? = nil, onClosed: (() -> Void)? = nil) {
         self.theme = theme
@@ -55,7 +56,7 @@ final class CursorRemapWindowController: NSWindowController, NSTableViewDataSour
         tableView.target = self
         tableView.doubleAction = #selector(chooseCursorFile)
         tableView.style = .inset
-        for (index, title) in ["光标状态", "当前文件", "帧数"].enumerated() {
+        for (index, title) in ["光标状态", "当前图标", "帧数"].enumerated() {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("col\(index)"))
             column.title = title
             column.width = [210, 310, 60][index]
@@ -97,9 +98,26 @@ final class CursorRemapWindowController: NSWindowController, NSTableViewDataSour
         guard let identifier = tableColumn?.identifier.rawValue, slots.indices.contains(row) else { return nil }
         let slot = slots[row]
         let cell = NSTableCellView()
+
+        if identifier == "col1" {
+            // 显示 ANI / CUR 第一帧，文件名放在提示里，避免列表被长文件名占满
+            let url = replacements[slot.identifier]
+                ?? slot.sourcePath.map { URL(fileURLWithPath: $0) }
+            let imageView = NSImageView(frame: NSRect(x: 4, y: 3, width: 24, height: 24))
+            imageView.image = url.flatMap { previewImage(for: $0) }
+            imageView.imageScaling = .scaleProportionallyUpOrDown
+            imageView.imageFrameStyle = .none
+            let filename = url?.lastPathComponent ?? "未记录源文件"
+            imageView.toolTip = replacements[slot.identifier] == nil
+                ? filename
+                : "已替换为：\(filename)"
+            cell.addSubview(imageView)
+            cell.imageView = imageView
+            return cell
+        }
+
         let field: NSTextField
-        switch identifier {
-        case "col0":
+        if identifier == "col0" {
             var name = WindowsCursorConverter.cursorDisplayName(for: slot.identifier)
             if !slot.role.isEmpty, slot.role != name {
                 name = "\(name)（\(slot.role)）"
@@ -107,17 +125,7 @@ final class CursorRemapWindowController: NSWindowController, NSTableViewDataSour
             field = NSTextField(labelWithString: name)
             field.frame = NSRect(x: 4, y: 7, width: 200, height: 17)
             field.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        case "col1":
-            let replacement = replacements[slot.identifier]?.lastPathComponent
-            let existing = slot.sourcePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "未记录"
-            let text = replacement.map { "→ \($0)" } ?? existing
-            field = NSTextField(labelWithString: text)
-            field.frame = NSRect(x: 4, y: 7, width: 300, height: 17)
-            field.font = replacement == nil
-                ? NSFont.systemFont(ofSize: 11)
-                : NSFont.systemFont(ofSize: 11, weight: .semibold)
-            field.textColor = replacement == nil ? .secondaryLabelColor : .labelColor
-        default:
+        } else {
             field = NSTextField(labelWithString: "\(slot.frameCount)")
             field.frame = NSRect(x: 4, y: 7, width: 50, height: 17)
             field.font = NSFont.systemFont(ofSize: 11)
@@ -127,6 +135,14 @@ final class CursorRemapWindowController: NSWindowController, NSTableViewDataSour
         cell.addSubview(field)
         cell.textField = field
         return cell
+    }
+
+    private func previewImage(for url: URL) -> NSImage? {
+        let key = url.path as NSString
+        if let cached = previewCache.object(forKey: key) { return cached }
+        guard let image = WindowsCursorConverter.previewImage(for: url) else { return nil }
+        previewCache.setObject(image, forKey: key)
+        return image
     }
 
     // MARK: - 操作

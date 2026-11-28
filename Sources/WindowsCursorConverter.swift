@@ -316,6 +316,50 @@ enum WindowsCursorConverter {
         }.sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
     }
 
+    /// 提取 ANI / CUR 的第一帧作为预览图（文件管理器图标、编辑窗口都用）。
+    static func previewImage(for url: URL) -> NSImage? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let frame: Data?
+        if data.count >= 12, fourCC(data, 0) == "RIFF", fourCC(data, 8) == "ACON" {
+            frame = firstICONFrame(in: data)
+        } else {
+            frame = data
+        }
+        guard let frame,
+              let parsed = parseCUR(frame),
+              let png = parsed.png,
+              let image = NSImage(data: png) else { return nil }
+        image.size = NSSize(width: 64, height: 64)
+        return image
+    }
+
+    /// 取 ANI 中 LIST/framed 段的第一个 icon 子块，避免为预览解析全部动画帧。
+    private static func firstICONFrame(in data: Data) -> Data? {
+        var pos = 12
+        while pos + 8 <= data.count {
+            let id = fourCC(data, pos)
+            let size = Int(readUInt32(data, pos + 4))
+            let payload = pos + 8
+            guard payload + size <= data.count else { return nil }
+            if id == "LIST", fourCC(data, payload) == "fram" {
+                var sub = payload + 4
+                let end = payload + size
+                while sub + 8 <= end {
+                    let subID = fourCC(data, sub)
+                    let subSize = Int(readUInt32(data, sub + 4))
+                    let subPayload = sub + 8
+                    guard subPayload + subSize <= end else { break }
+                    if subID == "icon" {
+                        return Data(data[subPayload..<(subPayload + subSize)])
+                    }
+                    sub += 8 + subSize + (subSize & 1)
+                }
+            }
+            pos = payload + size + (size & 1)
+        }
+        return nil
+    }
+
     // MARK: - RIFF / ANI 解析
 
     private struct ParsedCursor {

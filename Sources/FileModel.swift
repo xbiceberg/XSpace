@@ -169,6 +169,17 @@ enum IconCache {
                 return image
             }
         }
+        // Windows 光标文件显示其第一帧，而不是系统通用文件图标
+        if ext == "ani" || ext == "cur" {
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate?.timeIntervalSince1970 ?? 0
+            let fileKey = "cursor|\(url.path)|\(Int(modified))" as NSString
+            if let cached = fileIconCache.object(forKey: fileKey) { return cached }
+            if let image = WindowsCursorConverter.previewImage(for: url) {
+                fileIconCache.setObject(image, forKey: fileKey)
+                return image
+            }
+        }
         let key = ext as NSString
         if let cached = extensionIcons.object(forKey: key) { return cached }
         let image = FileIconResolver.image(for: ext)
