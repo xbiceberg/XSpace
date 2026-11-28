@@ -269,6 +269,11 @@ private final class FileTableCellView: NSTableCellView {
 /// 文件名区域靠折行（1~4 行）容纳长名字，而不是把格子拉宽。
 private func iconCellWidth(iconSize: CGFloat) -> CGFloat { iconSize + 20 }
 
+/// 文件格子之间的横向 / 纵向间距。统一从这里取值，保证列数计算与
+/// NSCollectionViewFlowLayout 的实际排布始终一致，缩放图标时不会错位。
+private func fileSpacing() -> CGFloat { AppSettings.fileSpacing }
+private func fileLineSpacing() -> CGFloat { AppSettings.fileSpacing / 3 }
+
 /// 计算文件名在给定宽度下需要几行：短名字只占一行，长名字最多四行。
 private func iconNameLineCount(_ name: String, width: CGFloat, font: NSFont) -> Int {
     let style = NSMutableParagraphStyle()
@@ -859,7 +864,8 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     /// 图标格子：宽度固定为「图标 + 少量文字边距」，剩余空白留在窗格右侧，
     /// 不再把多余宽度均分到每列，避免放大图标后图标之间出现大片空隙。
     /// 高度 = 图标 + 图标与文字间距 + 文件名行数（1~4）行高 + 上下留白。
-    /// 同一行的所有格子使用相同高度，确保图标在同一水平线上。
+    /// 同一行所有格子用行内最长文件名所需的高度；行与行之间再留固定间距，
+    /// 所以名字短的那几行图标会更紧凑。
     private func iconCellSize(lines: Int = 1) -> NSSize {
         let iconSize = AppSettings.iconSize(for: index)
         let textSize = AppSettings.textSize(for: index)
@@ -868,16 +874,19 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
         return NSSize(width: iconCellWidth(iconSize: iconSize), height: cellHeight)
     }
 
-    /// 当前窗格宽度下每行能排几个图标；与 NSCollectionViewFlowLayout 的固定 itemSize + 最小间距一致。
+    /// 当前窗格宽度下每行能排几个图标；与 NSCollectionViewFlowLayout 的固定
+    /// itemSize + 文件间距一致，保证行数统计和实际排布相同。
     private func iconGridColumnCount() -> Int {
         let width = max(0, collectionView.bounds.width)
         let cellWidth = iconCellWidth(iconSize: AppSettings.iconSize(for: index))
         let inset: CGFloat = 8
-        let spacing: CGFloat = 6
+        let spacing = fileSpacing()
         return max(1, Int(floor((width - inset * 2 + spacing) / (cellWidth + spacing))))
     }
 
     /// 取某一行中最长文件名所需的行数（1~4），整行共用该高度。
+    /// 每行高度只由本行内容决定，下一行与本行之间再留固定的 fileLineSpacing，
+    /// 所以文件名短的行会更紧凑，不会因为别处有四五行的名字而被整体撑开。
     private func iconRowLineCount(forItemAt item: Int) -> Int {
         let columns = iconGridColumnCount()
         let rowStart = item - item % columns
@@ -894,8 +903,8 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     private func configureCollectionView() {
         let layout = NSCollectionViewFlowLayout()
         layout.itemSize = iconCellSize()
-        layout.minimumInteritemSpacing = 6
-        layout.minimumLineSpacing = 8
+        layout.minimumInteritemSpacing = fileSpacing()
+        layout.minimumLineSpacing = fileLineSpacing()
         layout.sectionInset = NSEdgeInsets(top: 6, left: 8, bottom: 8, right: 8)
         collectionView.collectionViewLayout = layout
         collectionView.dataSource = self
@@ -965,8 +974,8 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     @objc func applyAppearanceSettings() {
         if let layout = collectionView.collectionViewLayout as? NSCollectionViewFlowLayout {
             layout.itemSize = iconCellSize()
-            layout.minimumInteritemSpacing = 6
-            layout.minimumLineSpacing = 8
+            layout.minimumInteritemSpacing = fileSpacing()
+            layout.minimumLineSpacing = fileLineSpacing()
             layout.sectionInset = NSEdgeInsets(top: 6, left: 8, bottom: 8, right: 8)
             layout.invalidateLayout()
         }

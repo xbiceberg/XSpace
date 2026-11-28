@@ -707,6 +707,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var textSliders: [NSSlider] = []
     private var iconValueLabels: [NSTextField] = []
     private var textValueLabels: [NSTextField] = []
+    private var fileSpacingSlider: NSSlider?
+    private var fileSpacingValueLabel: NSTextField?
     private var modifierRecorder: ModifierRecorder?
     private var screenshotRecorder: ShortcutRecorder?
     private var undoRecorder: ShortcutRecorder?
@@ -2231,11 +2233,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             textValueLabels.append(textValue)
         }
 
+        // 文件与文件之间的间距：对所有窗格统一生效，文件夹和各种文件都一样
+        view.addSubview(makeLabel("文件间距",
+                                  frame: NSRect(x: 34, y: 156, width: 110, height: 20), alignment: .right))
+        let spacingSlider = makeSlider(min: 0, max: 60, value: Double(AppSettings.fileSpacing),
+                                       frame: NSRect(x: 152, y: 154, width: 240, height: 20),
+                                       action: #selector(fileSpacingChanged(_:)), tag: -1)
+        let spacingValue = makeValueLabel(frame: NSRect(x: 420, y: 156, width: 56, height: 20))
+        view.addSubview(spacingSlider)
+        view.addSubview(spacingValue)
+        fileSpacingSlider = spacingSlider
+        fileSpacingValueLabel = spacingValue
+
         let reset = NSButton(title: "恢复默认", target: self, action: #selector(resetAppearanceDefaults))
         reset.frame = NSRect(x: 32, y: 96, width: 100, height: 28)
         reset.bezelStyle = .rounded
         view.addSubview(reset)
-        let resetHint = makeLabel("仅重置各窗格的图标与文字大小；滚轮缩放修饰键请到「快捷键」页设置",
+        let resetHint = makeLabel("仅重置各窗格的图标 / 文字大小与文件间距；滚轮缩放修饰键请到「快捷键」页设置",
                                   frame: NSRect(x: 146, y: 100, width: 390, height: 20))
         resetHint.font = NSFont.systemFont(ofSize: 11)
         resetHint.textColor = .tertiaryLabelColor
@@ -2270,6 +2284,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             iconValueLabels[index].stringValue = "\(Int(icon))"
             textValueLabels[index].stringValue = "\(Int(text))"
         }
+        let spacing = AppSettings.fileSpacing
+        fileSpacingSlider?.doubleValue = Double(spacing)
+        fileSpacingValueLabel?.stringValue = String(format: "%g", Double(spacing))
     }
 
     @objc private func resetAppearanceDefaults() {
@@ -2278,6 +2295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             AppSettings.setIconSize(64, for: index)
             AppSettings.setTextSize(12, for: index)
         }
+        AppSettings.fileSpacing = 1.5
         refreshAppearanceValues()
         notifyAppearanceChanged()
     }
@@ -2475,6 +2493,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if sender.tag < textValueLabels.count {
             textValueLabels[sender.tag].stringValue = "\(Int(sender.doubleValue))"
         }
+        notifyAppearanceChanged()
+    }
+
+    @objc private func fileSpacingChanged(_ sender: NSSlider) {
+        AppSettings.fileSpacing = CGFloat(sender.doubleValue)
+        fileSpacingValueLabel?.stringValue = String(format: "%g", sender.doubleValue)
         notifyAppearanceChanged()
     }
 

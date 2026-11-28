@@ -234,6 +234,7 @@ enum AppSettings {
     private static let sortsKey = "qspacelite.sortKeys"
     private static let iconSizesKey = "qspacelite.iconSizes"
     private static let textSizesKey = "qspacelite.textSizes"
+    private static let fileSpacingKey = "qspacelite.fileSpacing"
     private static let iconResizeModifierKey = "qspacelite.iconResizeModifier"
     private static let screenshotShortcutKey = "qspacelite.screenshotShortcut"
     private static let undoShortcutKey = "qspacelite.undoShortcut"
@@ -481,6 +482,16 @@ enum AppSettings {
         guard values.indices.contains(index) else { return }
         values[index] = Double(size)
         defaults.set(values, forKey: textSizesKey)
+    }
+
+    /// 图标视图里“文件与文件之间”的间距（横向），默认 1.5pt（原 6pt 的四分之一）。
+    /// 上下两行间距为横向的 1/3，默认 0.5pt（原 8pt 再减少四分之三）。
+    static var fileSpacing: CGFloat {
+        get {
+            let value = defaults.object(forKey: fileSpacingKey) as? Double ?? 1.5
+            return CGFloat(min(60, max(0, value)))
+        }
+        set { defaults.set(min(60, max(0, Double(newValue))), forKey: fileSpacingKey) }
     }
 
     /// 滚轮调整图标大小时使用的修饰键，默认为 Control
