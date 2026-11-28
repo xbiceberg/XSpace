@@ -224,6 +224,9 @@ enum AppSettings {
     private static let quickAccessKey = "qspacelite.quickAccess"
     private static let legacyCustomPathsKey = "qspacelite.customPaths"   // 旧版只存自定义路径，仅用于迁移
     private static let hiddenKey = "qspacelite.showHiddenFiles"
+    private static let hideKnownExtensionsKey = "qspacelite.hideKnownExtensions"
+    private static let inputSourceLockEnabledKey = "qspacelite.inputSourceLockEnabled"
+    private static let inputSourceLockIDKey = "qspacelite.inputSourceLockID"
     private static let sidebarKey = "qspacelite.sidebarVisible"
     private static let confirmTrashKey = "qspacelite.confirmTrash"
     private static let confirmDeleteKey = "qspacelite.confirmDelete"
@@ -376,6 +379,28 @@ enum AppSettings {
     static var showHiddenFiles: Bool {
         get { defaults.bool(forKey: hiddenKey) }
         set { defaults.set(newValue, forKey: hiddenKey) }
+    }
+
+    /// 隐藏常用后缀名：对已设置图标的扩展名（内置图标库或用户自定义），
+    /// 文件名里不再显示扩展名；未设置图标的类型仍显示后缀。默认开启。
+    static var hideKnownExtensions: Bool {
+        get { defaults.object(forKey: hideKnownExtensionsKey) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: hideKnownExtensionsKey) }
+    }
+
+    /// 全局输入法锁定：开启后系统输入法一旦被切走就自动切回指定输入法。
+    static var inputSourceLockEnabled: Bool {
+        get { defaults.object(forKey: inputSourceLockEnabledKey) as? Bool ?? false }
+        set { defaults.set(newValue, forKey: inputSourceLockEnabledKey) }
+    }
+
+    /// 锁定的 TIS 输入法标识（kTISPropertyInputSourceID），nil 表示未选择。
+    static var inputSourceLockID: String? {
+        get { defaults.string(forKey: inputSourceLockIDKey) }
+        set {
+            if let newValue { defaults.set(newValue, forKey: inputSourceLockIDKey) }
+            else { defaults.removeObject(forKey: inputSourceLockIDKey) }
+        }
     }
 
     static var sidebarVisible: Bool {
@@ -804,4 +829,6 @@ extension Notification.Name {
     static let xspaceUndoSettingsChanged = Notification.Name("xspace.undoSettingsChanged")
     static let xspaceSelectAllShortcutChanged = Notification.Name("xspace.selectAllShortcutChanged")
     static let xspaceFileIconsChanged = Notification.Name("xspace.fileIconsChanged")
+    static let xspaceInputSourceChanged = Notification.Name("xspace.inputSourceChanged")
+    static let xspaceInputSourceListChanged = Notification.Name("xspace.inputSourceListChanged")
 }

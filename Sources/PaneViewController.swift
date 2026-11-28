@@ -414,6 +414,8 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     private var historyStack: [URL]
     private var historyIndex = 0
     private var searchText = ""
+    /// 上次构造 FileItem 时的后缀名可见性，用于偏好翻转时重建显示名
+    private var lastHideKnownExtensions = AppSettings.hideKnownExtensions
 
     private let containerView = PaneContainerView()
     private let headerView = NSView()
@@ -969,8 +971,16 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
             layout.invalidateLayout()
         }
         tableView.rowHeight = max(24, AppSettings.textSize(for: index) + 12)
-        collectionView.reloadData()
-        tableView.reloadData()
+        // 显示名（后缀名可见性）随偏好变化，需重建 FileItem 才能生效；
+        // 仅在偏好真的翻转时重建，避免每次外观调整（字号 / 壁纸）都重复构造。
+        if lastHideKnownExtensions != AppSettings.hideKnownExtensions {
+            lastHideKnownExtensions = AppSettings.hideKnownExtensions
+            items = items.map { FileItem(url: $0.url) }
+            applyFilterAndSort()
+        } else {
+            collectionView.reloadData()
+            tableView.reloadData()
+        }
         updateWallpaper()
     }
 
@@ -1106,6 +1116,26 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
                 self.lastDirectoryStamp = self.directoryStamp(directory)
                 self.applyFilterAndSort()
             }
+            // 首次进入含 .app 的目录：后台批量计算并缓存 bundle 大小，完成后静默刷新该批行。
+            // 已有缓存的 app 直接命中，不再实时遍历。
+            let uncachedApps = loaded.filter { $0.kind == "应用程序" && DirectorySizeCache.cached(for: $0.url) == nil }
+            if !uncachedApps.isEmpty {
+                DispatchQueue.global(qos: .utility).async {
+                    var changed = false
+                    for item in uncachedApps {
+                        guard token == self.loadGeneration else { return }
+                        _ = DirectorySizeCache.sizeSync(for: item.url)
+                        changed = true
+                    }
+                    guard changed, token == self.loadGeneration else { return }
+                    DispatchQueue.main.async {
+                        guard token == self.loadGeneration else { return }
+                        let refreshed = self.items.map { FileItem(url: $0.url) }
+                        self.items = refreshed
+                        self.applyFilterAndSort()
+                    }
+                }
+            }
         }
     }
 
@@ -1158,7 +1188,12 @@ final class PaneViewController: NSViewController, NSTableViewDataSource, NSTable
     private func statusText() -> String {
         if let text = transientStatus, let until = transientStatusUntil, Date() < until { return text }
         let selected = selectedURLs().count
-        let base = "\(displayedItems.count) 个项目"
+        var base = "\(displayedItems.count) 个项目"
+        // 汇总「文件夹以外」的文件总大小：.app 视为单个文件，普通文件夹不计入。
+        let fileBytes = displayedItems.reduce(Int64(0)) { $0 + ($1.isDirectory ? 0 : $1.size) }
+        if fileBytes > 0 {
+            base += " · 文件 \(FileSizeFormatter.string(fileBytes))"
+        }
         return selected > 0 ? "\(base) · 已选择 \(selected) 项" : base
     }
 

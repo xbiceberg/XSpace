@@ -367,14 +367,31 @@ final class MainViewController: NSViewController, PaneDelegate, SidebarDelegate,
         let menu = NSMenu()
         menu.addItem(title: "回到默认位置", action: #selector(goToDefaults), target: self, keyEquivalent: "")
         menu.addItem(title: "恢复图标默认尺寸", action: #selector(resetDefaultSizes), target: self, keyEquivalent: "")
-        menu.addItem(title: "批量重命名选中项…", action: #selector(openBulkRename), target: self, keyEquivalent: "")
+        menu.addItem(title: "批量重命名", action: #selector(openBulkRename), target: self, keyEquivalent: "")
         menu.addItem(.separator())
+        let hideExt = NSMenuItem(title: "隐藏常用后缀名", action: #selector(globalToggleHideExtensions),
+                                 keyEquivalent: "")
+        hideExt.target = self
+        hideExt.state = AppSettings.hideKnownExtensions ? .on : .off
+        hideExt.toolTip = "对已设置图标的文件类型隐藏后缀名，未设置图标的类型仍显示。"
+        menu.addItem(hideExt)
+        menu.addItem(title: "输入法锁定…", action: #selector(openInputSourceSettings), target: self, keyEquivalent: "")
         menu.addItem(title: AppSettings.sidebarVisible ? "隐藏侧边栏" : "显示侧边栏",
                      action: #selector(globalToggleSidebar), target: self, keyEquivalent: "")
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
     }
 
     @objc private func globalToggleSidebar() { toggleSidebar() }
+
+    @objc private func globalToggleHideExtensions() {
+        AppSettings.hideKnownExtensions.toggle()
+        NotificationCenter.default.post(name: .xspaceAppearanceChanged, object: nil)
+    }
+
+    @objc private func openInputSourceSettings() {
+        guard let app = NSApp.delegate as? AppDelegate else { return }
+        app.showInputSourcePreferences()
+    }
 
     /// 首次布局后按比例划分各层 split；用户后续拖动不会被反复重置
     private func applySplitPositionsIfNeeded() {

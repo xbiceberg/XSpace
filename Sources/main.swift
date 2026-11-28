@@ -691,6 +691,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private weak var mainWindow: NSWindow?
     private var preferencesWindow: NSWindow?
     private weak var bookmarksMenuRef: NSMenu?
+    private weak var inputSourceMenuRef: NSMenu?
     private var lastHorizontalSwipe = Date.distantPast
     private var globalScreenshotMonitor: Any?
     private var screenshotHotKeyRef: EventHotKeyRef?
@@ -786,6 +787,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         SevenZipDockIcon.install()
         // 光标主题：用户开启后启动时自动恢复上次应用的 .cape
         MousecapeThemes.autoApplyIfNeeded()
+        // 输入法锁定：参照 LockIME 的 TIS 思路，开启后启动时即恢复锁定目标
+        InputSourceLock.shared.start()
 
         // 系统关机/重启/注销时放行真正退出，避免「XSpace 阻止了关机」。
         // willPowerOffNotification 覆盖关机与重启；注销走 currentEvent 判断（见下）。
@@ -1167,16 +1170,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         let menu = NSMenu()
         menu.addItem(withTitle: "显示 XSpace", action: #selector(showMainWindow), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "截图", action: #selector(takeScreenshot), keyEquivalent: "").target = self
-        menu.addItem(.separator())
         menu.addItem(withTitle: "隐藏到后台", action: #selector(hideToBackground), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "显示 XSpace", action: #selector(showMainWindow), keyEquivalent: "").target = self
         menu.addItem(.separator())
+        menu.addItem(withTitle: "截图", action: #selector(takeScreenshot), keyEquivalent: "").target = self
+        let inputMenu = NSMenu()
+        inputMenu.delegate = self
+        inputSourceMenuRef = inputMenu
+        let inputItem = menu.addItem(withTitle: InputSourceLock.shared.statusSummary,
+                                     action: nil, keyEquivalent: "")
+        inputItem.tag = 900
+        inputItem.submenu = inputMenu
         menu.addItem(withTitle: "偏好设置…", action: #selector(showPreferences), keyEquivalent: ",").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "彻底退出 XSpace", action: #selector(reallyQuit), keyEquivalent: "").target = self
         item.menu = menu
         statusItem = item
+    }
+
+    // MARK: - 状态栏「输入法锁定」子菜单
+
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu === inputSourceMenuRef else { return }
+        rebuildInputSourceMenu(menu)
+        if let parent = menu.supermenu, let item = parent.item(withTag: 900) {
+            item.title = InputSourceLock.shared.statusSummary
+        }
+    }
+
+    private func rebuildInputSourceMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let toggleTitle = InputSourceLock.shared.isEnabled ? "关闭输入法锁定" : "开启输入法锁定"
+        let toggle = menu.addItem(withTitle: toggleTitle,
+                                  action: #selector(toggleInputSourceLockFromMenu),
+                                  keyEquivalent: "")
+        toggle.target = self
+        toggle.state = InputSourceLock.shared.isEnabled ? .on : .off
+        menu.addItem(.separator())
+
+        let noneItem = menu.addItem(withTitle: "不锁定",
+                                    action: #selector(selectLockedInputSource(_:)),
+                                    keyEquivalent: "")
+        noneItem.target = self
+        noneItem.state = InputSourceLock.shared.targetID == nil ? .on : .off
+
+        let sources = InputSourceLock.shared.availableSources()
+        if sources.isEmpty {
+            let empty = menu.addItem(withTitle: "未找到可选输入法", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+        }
+        for source in sources {
+            let item = menu.addItem(withTitle: source.name,
+                                    action: #selector(selectLockedInputSource(_:)),
+                                    keyEquivalent: "")
+            item.target = self
+            item.representedObject = source.id
+            item.state = InputSourceLock.shared.targetID == source.id ? .on : .off
+        }
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "输入法设置…",
+                     action: #selector(showInputSourcePreferences),
+                     keyEquivalent: "").target = self
+    }
+
+    @objc private func toggleInputSourceLockFromMenu() {
+        InputSourceLock.shared.setEnabled(!InputSourceLock.shared.isEnabled)
+    }
+
+    @objc private func selectLockedInputSource(_ sender: NSMenuItem) {
+        InputSourceLock.shared.choose(sender.representedObject as? String)
+    }
+
+    @objc func showInputSourcePreferences() {
+        showPreferences()
+        if let tabs = preferencesTabs,
+           let target = tabs.tabViewItems.first(where: { ($0.identifier as? String) == "inputSource" }) {
+            tabs.selectTabViewItem(target)
+        }
     }
 
     @objc func showMainWindow() {
@@ -1589,7 +1658,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     @objc func showAbout() {
         Dialog.alert(
             title: "XSpace",
-            message: "一个 Mac 上轻量级别的多窗口文件管理器。\n集成了轻量级别的截图以及 7-ZIP 功能。\n版本 \(Self.appVersion)"
+            message: """
+            一个 Mac 上轻量级别的多窗口文件管理器。
+            集成了截图、7-ZIP、光标主题与输入法锁定功能。
+            版本 \(Self.appVersion)
+
+            使用的第三方项目代码 / 参考：
+            · Mousecape — Alex Zielenski（BSD 风格许可，含个人非商业限制）
+            · LockIME — oomol-lab（GPL-3.0；输入法锁定思路参考，未复制源码）
+            · 7-Zip / LZMA SDK — Igor Pavlov（LGPL-2.1+）
+            · Mousecape-swiftUI — sdmj76（仅界面形态参考，未复制源码）
+            """
         )
     }
 
@@ -1630,6 +1709,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         tabs.addTabViewItem(sevenZipTabItem())
         tabs.addTabViewItem(iconsTabItem())
         tabs.addTabViewItem(mousecapeTabItem())
+        tabs.addTabViewItem(inputSourceTabItem())
         window.contentView = tabs
 
         preferencesTabs = tabs
@@ -1662,6 +1742,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let view = MousecapeSettingsView(frame: NSRect(x: 0, y: 0, width: 560, height: 520))
         let item = NSTabViewItem(identifier: "mousecape")
         item.label = "光标"
+        item.view = view
+        return item
+    }
+
+    private func inputSourceTabItem() -> NSTabViewItem {
+        let view = InputSourceSettingsView(frame: NSRect(x: 0, y: 0, width: 560, height: 520))
+        let item = NSTabViewItem(identifier: "inputSource")
+        item.label = "输入法"
         item.view = view
         return item
     }

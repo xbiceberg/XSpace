@@ -28,17 +28,26 @@ struct FileItem: Identifiable, Hashable {
         var isDir: ObjCBool = false
         FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
         // .app 虽然在系统里是目录（bundle），但在文件管理器中应作为“应用程序”而非文件夹处理
-        let isAppBundle = url.pathExtension.lowercased() == "app"
-        self.displayName = isAppBundle
-            ? (self.name as NSString).deletingPathExtension
-            : self.name
+        let ext = url.pathExtension
+        let isAppBundle = ext.lowercased() == "app"
+        // 隐藏常用后缀名：只隐藏已设置图标的类型（内置图标库 / 用户自定义规则）。
+        // 没有图标的后缀仍显示，避免同名文件无法区分。
+        let hidesExtension = isAppBundle
+            || (AppSettings.hideKnownExtensions && !ext.isEmpty && FileIconResolver.hasRule(for: ext))
+        self.displayName = hidesExtension ? (self.name as NSString).deletingPathExtension : self.name
         self.isDirectory = isDir.boolValue && !isAppBundle
 
         var sizeValue: Int64 = 0
         var modifiedDate: Date?
-        if let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) {
-            sizeValue = Int64(values.fileSize ?? 0)
-            modifiedDate = values.contentModificationDate
+        if isAppBundle {
+            // .app 按单个文件处理：用持久缓存里的 bundle 内容总大小（首次递归统计后不再实时读取）
+            sizeValue = DirectorySizeCache.cached(for: url) ?? 0
+            modifiedDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        } else {
+            if let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) {
+                sizeValue = Int64(values.fileSize ?? 0)
+                modifiedDate = values.contentModificationDate
+            }
         }
         self.size = sizeValue
         self.modified = modifiedDate

@@ -12,13 +12,34 @@ private enum SidebarAction {
     case addBookmark
 }
 
+private enum SidebarMetrics {
+    /// 容量条长度为原 20pt 的三倍
+    static let capacityTrackWidth: CGFloat = 60
+    /// 与「外接空间」文字同高
+    static let capacityTrackHeight: CGFloat = 14
+    /// 所有容量行都预留一个推出按钮的位置，保证两根条左端对齐
+    static let ejectReserve: CGFloat = 14
+}
+
 private final class SidebarCellView: NSTableCellView {
-    let ejectButton = NSButton(frame: NSRect(x: 0, y: 0, width: 18, height: 16))
+    let ejectButton = NSButton(frame: NSRect(x: 0, y: 0, width: SidebarMetrics.ejectReserve, height: 16))
+    /// 卷容量条：填充部分表示已用比例，剩余可用空间以大写文字显示在条内
+    private let capacityTrack = NSView(frame: .zero)
+    private let capacityFill = NSView(frame: .zero)
+    private let capacityLabel = NSTextField(labelWithString: "")
     var onEject: (() -> Void)?
     var isHeaderRow = false
     var showsEject = false {
         didSet { ejectButton.isHidden = !showsEject; needsLayout = true }
     }
+    var showsCapacity = false {
+        didSet {
+            capacityTrack.isHidden = !showsCapacity
+            capacityLabel.isHidden = !showsCapacity
+            needsLayout = true
+        }
+    }
+    private var usedFraction: CGFloat = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -43,17 +64,54 @@ private final class SidebarCellView: NSTableCellView {
         ejectButton.action = #selector(ejectTapped)
         ejectButton.isHidden = true
         addSubview(ejectButton)
+
+        capacityTrack.wantsLayer = true
+        capacityTrack.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
+        capacityTrack.layer?.cornerRadius = SidebarMetrics.capacityTrackHeight / 2
+        // 柱状图整体 50% 透明；容量文字是兄弟视图，不受影响
+        capacityTrack.alphaValue = 0.5
+        capacityFill.wantsLayer = true
+        capacityFill.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        capacityFill.layer?.cornerRadius = SidebarMetrics.capacityTrackHeight / 2
+        capacityTrack.addSubview(capacityFill)
+        capacityTrack.isHidden = true
+        addSubview(capacityTrack)
+
+        capacityLabel.font = NSFont.boldSystemFont(ofSize: 9)
+        capacityLabel.textColor = .white
+        capacityLabel.alignment = .center
+        capacityLabel.lineBreakMode = .byClipping
+        capacityLabel.isEditable = false
+        capacityLabel.isSelectable = false
+        capacityLabel.drawsBackground = false
+        capacityLabel.isBezeled = false
+        let labelShadow = NSShadow()
+        labelShadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
+        labelShadow.shadowOffset = NSSize(width: 0, height: -0.5)
+        labelShadow.shadowBlurRadius = 1
+        capacityLabel.shadow = labelShadow
+        capacityLabel.isHidden = true
+        addSubview(capacityLabel)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(image: NSImage?, title: String, header: Bool, eject: Bool) {
+    func configure(image: NSImage?, title: String, header: Bool, eject: Bool,
+                   capacityFreeText: String? = nil, capacityUsed: CGFloat = 0) {
         isHeaderRow = header
         imageView?.image = image
         textField?.stringValue = title
         showsEject = eject
+        if let free = capacityFreeText {
+            showsCapacity = true
+            usedFraction = max(0, min(1, capacityUsed))
+            capacityLabel.stringValue = free.uppercased()
+            capacityLabel.toolTip = "剩余可用 \(free)"
+        } else {
+            showsCapacity = false
+        }
         needsLayout = true
     }
 
@@ -65,13 +123,29 @@ private final class SidebarCellView: NSTableCellView {
         let iconX: CGFloat = isHeaderRow ? 8 : 14
         let textX: CGFloat = isHeaderRow ? 28 : 34
         imageView?.frame = NSRect(x: iconX, y: 3, width: 17, height: 17)
-        let rightInset: CGFloat = showsEject ? 28 : 8
+        // 容量行统一预留推出按钮位置，使「/」与「外接空间」的柱状图左端对齐
+        let trackWidth = showsCapacity ? SidebarMetrics.capacityTrackWidth : 0
+        let reserve = SidebarMetrics.ejectReserve
+        let rightInset: CGFloat = showsCapacity
+            ? reserve + trackWidth
+            : (showsEject ? reserve + 4 : 8)
         textField?.frame = NSRect(x: textX, y: 3, width: max(40, width - textX - rightInset), height: 18)
         textField?.font = isHeaderRow
             ? NSFont.systemFont(ofSize: 11, weight: .semibold)
             : NSFont.systemFont(ofSize: 12)
         textField?.textColor = isHeaderRow ? .secondaryLabelColor : .labelColor
-        ejectButton.frame = NSRect(x: max(0, width - 24), y: 4, width: 18, height: 16)
+        ejectButton.frame = NSRect(x: max(0, width - reserve), y: 4,
+                                   width: reserve, height: 16)
+        if showsCapacity {
+            let trackX = max(textX, width - reserve - trackWidth)
+            let trackY: CGFloat = 5
+            capacityTrack.frame = NSRect(x: trackX, y: trackY,
+                                         width: trackWidth, height: SidebarMetrics.capacityTrackHeight)
+            capacityFill.frame = NSRect(x: 0, y: 0, width: usedFraction * trackWidth,
+                                        height: SidebarMetrics.capacityTrackHeight)
+            capacityLabel.frame = NSRect(x: trackX, y: trackY,
+                                         width: trackWidth, height: SidebarMetrics.capacityTrackHeight)
+        }
     }
 }
 
@@ -88,19 +162,26 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         let isQuickAccess: Bool
         let isBookmark: Bool
         let canEject: Bool
+        /// 卷的剩余可用空间文本（GB）；非卷项为 nil
+        let capacityFreeText: String?
+        let capacityUsed: CGFloat
 
         static func header(_ title: String) -> Entry {
             Entry(title: title, url: nil, icon: nil, isHeader: true, isAction: false,
-                  action: nil, isQuickAccess: false, isBookmark: false, canEject: false)
+                  action: nil, isQuickAccess: false, isBookmark: false, canEject: false,
+                  capacityFreeText: nil, capacityUsed: 0)
         }
         static func item(_ title: String, _ url: URL, _ icon: NSImage?,
-                         quickAccess: Bool = false, bookmark: Bool = false, ejectable: Bool = false) -> Entry {
+                         quickAccess: Bool = false, bookmark: Bool = false, ejectable: Bool = false,
+                         capacityFreeText: String? = nil, capacityUsed: CGFloat = 0) -> Entry {
             Entry(title: title, url: url, icon: icon, isHeader: false, isAction: false,
-                  action: nil, isQuickAccess: quickAccess, isBookmark: bookmark, canEject: ejectable)
+                  action: nil, isQuickAccess: quickAccess, isBookmark: bookmark, canEject: ejectable,
+                  capacityFreeText: capacityFreeText, capacityUsed: capacityUsed)
         }
         static func action(_ title: String, _ icon: NSImage?, _ action: SidebarAction) -> Entry {
             Entry(title: title, url: nil, icon: icon, isHeader: false, isAction: true,
-                  action: action, isQuickAccess: false, isBookmark: false, canEject: false)
+                  action: action, isQuickAccess: false, isBookmark: false, canEject: false,
+                  capacityFreeText: nil, capacityUsed: 0)
         }
     }
 
@@ -202,12 +283,26 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         for volume in fm.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? [] {
             let name = volume.lastPathComponent.isEmpty ? "磁盘" : volume.lastPathComponent
             let ejectable = isEjectable(volume)
+            let capacity = volumeCapacity(volume)
             list.append(.item(name, volume, Symbol.image(ejectable ? "externaldrive" : "internaldrive"),
-                              ejectable: ejectable))
+                              ejectable: ejectable,
+                              capacityFreeText: capacity.freeText, capacityUsed: capacity.used))
         }
         list.append(.item("废纸篓", home.appendingPathComponent(".Trash"), Symbol.image("trash")))
         entries = list
         tableView.reloadData()
+    }
+
+    /// 卷容量：已用比例 + 剩余可用空间（以 G 为单位）。读不到容量时两者为 nil / 0。
+    private func volumeCapacity(_ url: URL) -> (freeText: String?, used: CGFloat) {
+        guard let values = try? url.resourceValues(forKeys: [
+            .volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey, .volumeTotalCapacityKey
+        ]), let total = values.volumeTotalCapacity, total > 0 else { return (nil, 0) }
+        let available = values.volumeAvailableCapacityForImportantUsage ?? Int64(values.volumeAvailableCapacity ?? 0)
+        let freeGB = Double(max(0, available)) / 1_000_000_000
+        let freeText = String(format: "%.0fG", freeGB)
+        let used = CGFloat(max(0, min(1, 1 - Double(available) / Double(total))))
+        return (freeText, used)
     }
 
     /// 内置启动盘不显示推出；其它挂载卷（安装第三方软件的 DMG、外接磁盘等）显示推出按钮
@@ -236,7 +331,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             cell.identifier = identifier
             return cell
         }()
-        cell.configure(image: entry.icon, title: entry.title, header: entry.isHeader, eject: entry.canEject)
+        cell.configure(image: entry.icon, title: entry.title, header: entry.isHeader, eject: entry.canEject,
+                       capacityFreeText: entry.capacityFreeText, capacityUsed: entry.capacityUsed)
         cell.onEject = { [weak self] in
             guard let self else { return }
             let row = self.tableView.row(for: cell)
