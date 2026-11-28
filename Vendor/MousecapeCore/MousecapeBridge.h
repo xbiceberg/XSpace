@@ -13,6 +13,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// 应用一个 .cape 光标主题文件
 + (BOOL)applyCapeAtPath:(NSString *)path;
+/// 直接应用内存中的 .cape 字典（用于 VNC 静态光标等运行时变换）
++ (BOOL)applyCapeDictionary:(NSDictionary *)cape;
 /// 恢复 macOS 系统默认光标
 + (void)resetCursors;
 /// 当前已应用的主题 Identifier（Mousecape 偏好域）

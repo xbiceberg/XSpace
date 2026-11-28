@@ -252,6 +252,7 @@ enum AppSettings {
     private static let sevenZipLevelKey = "qspacelite.sevenZipLevel"
     private static let mousecapeThemePathKey = "qspacelite.mousecapeThemePath"
     private static let mousecapeAutoApplyKey = "qspacelite.mousecapeAutoApply"
+    private static let mousecapeVNCStaticKey = "qspacelite.mousecapeVNCStatic"
     private static let fileIconOverridesKey = "qspacelite.fileIconOverrides"
     private static let customIconExtensionsKey = "qspacelite.customIconExtensions"
 
@@ -707,6 +708,15 @@ enum AppSettings {
             return defaults.bool(forKey: mousecapeAutoApplyKey)
         }
         set { defaults.set(newValue, forKey: mousecapeAutoApplyKey) }
+    }
+
+    /// VNC / 远程桌面兼容：只把 Normal（默认箭头）压成单帧静态图，其余光标保留动画。
+    static var mousecapeVNCStatic: Bool {
+        get {
+            guard defaults.object(forKey: mousecapeVNCStaticKey) != nil else { return false }
+            return defaults.bool(forKey: mousecapeVNCStaticKey)
+        }
+        set { defaults.set(newValue, forKey: mousecapeVNCStaticKey) }
     }
 
     // MARK: - 7-ZIP 设置

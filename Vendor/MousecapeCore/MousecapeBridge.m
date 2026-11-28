@@ -16,6 +16,10 @@
     return applyCapeAtPath(path);
 }
 
++ (BOOL)applyCapeDictionary:(NSDictionary *)cape {
+    return applyCape(cape);
+}
+
 + (void)resetCursors {
     resetAllCursors();
 }

@@ -58,13 +58,80 @@ enum MousecapeThemes {
         return NSImage(cgImage: topFrame, size: NSSize(width: 30, height: 30))
     }
 
+    /// 统一的应用入口：VNC 兼容模式下只把 Normal 箭头压成首帧，其余光标保留动画。
+    static func apply(theme url: URL) -> Bool {
+        guard AppSettings.mousecapeVNCStatic else {
+            return MousecapeBridge.applyCape(atPath: url.path)
+        }
+        guard let staticCape = staticCapeDictionary(from: url) else { return false }
+        return MousecapeBridge.applyCapeDictionary(staticCape as? [AnyHashable: Any] ?? [:])
+    }
+
+    /// Normal（默认箭头）在 macOS 上的标识及其等效别名。VNC 下只有它会被整张 sprite sheet 画出来。
+    private static let normalCursorIdentifiers: Set<String> = [
+        "com.apple.coregraphics.Arrow",
+        "com.apple.coregraphics.ArrowCtx",
+        "com.apple.coregraphics.ArrowS",
+        "com.apple.cursor.24"
+    ]
+
+    /// 只把 Normal 箭头裁成第一帧；其它动画光标原样保留。
+    private static func staticCapeDictionary(from url: URL) -> NSDictionary? {
+        guard let cape = NSMutableDictionary(contentsOf: url),
+              let cursors = cape["Cursors"] as? [String: Any] else { return nil }
+        var staticCursors: [String: Any] = [:]
+        for (identifier, value) in cursors {
+            guard normalCursorIdentifiers.contains(identifier),
+                  var cursor = value as? [String: Any] else {
+                staticCursors[identifier] = value
+                continue
+            }
+            let frameCount = (cursor["FrameCount"] as? NSNumber)?.intValue ?? 1
+            guard frameCount > 1, let reps = cursor["Representations"] as? [Any], !reps.isEmpty else {
+                staticCursors[identifier] = value
+                continue
+            }
+            // 旧格式：每帧一个 representation，直接取第一个；新格式：一张纵向 sprite sheet，裁顶部首帧。
+            let first: Any? = reps.count >= frameCount
+                ? reps.first
+                : reps.first.flatMap { firstFramePNG(from: $0, frameCount: frameCount) }
+            guard let first else {
+                staticCursors[identifier] = value
+                continue
+            }
+            cursor["FrameCount"] = 1
+            cursor["Representations"] = [first]
+            staticCursors[identifier] = cursor
+        }
+        cape["Cursors"] = staticCursors
+        return cape
+    }
+
+    private static func firstFramePNG(from representation: Any, frameCount: Int) -> Data? {
+        let cg: CGImage?
+        if let data = representation as? Data {
+            cg = NSImage(data: data)?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        } else if let image = representation as? NSImage {
+            cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        } else {
+            cg = nil
+        }
+        guard let cg, frameCount > 0 else { return nil }
+        let frameHeight = cg.height / frameCount
+        guard frameHeight > 0 else { return nil }
+        // CGImage 原点在左下，sprite sheet 的第 0 帧在最上方。
+        let rect = CGRect(x: 0, y: cg.height - frameHeight, width: cg.width, height: frameHeight)
+        guard let cropped = cg.cropping(to: rect) else { return nil }
+        return NSBitmapImageRep(cgImage: cropped).representation(using: .png, properties: [:])
+    }
+
     /// 首次启动时按用户设置恢复上次应用的主题
     static func autoApplyIfNeeded() {
         guard AppSettings.mousecapeAutoApply,
               let path = AppSettings.mousecapeThemePath,
               FileManager.default.fileExists(atPath: path) else { return }
         DispatchQueue.global(qos: .utility).async {
-            _ = MousecapeBridge.applyCape(atPath: path)
+            _ = MousecapeThemes.apply(theme: URL(fileURLWithPath: path))
         }
     }
 }
@@ -152,23 +219,35 @@ final class MousecapeSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         addSubview(refresh)
 
         // 选项卡片
-        addSubview(SettingCardView(frame: NSRect(x: 16, y: 16, width: 528, height: 76)))
+        addSubview(SettingCardView(frame: NSRect(x: 16, y: 16, width: 528, height: 112)))
         let autoApply = NSButton(checkboxWithTitle: "启动时自动应用上次主题", target: self, action: #selector(toggleAutoApply(_:)))
-        autoApply.frame = NSRect(x: 32, y: 62, width: 250, height: 20)
+        autoApply.frame = NSRect(x: 32, y: 94, width: 250, height: 20)
         autoApply.state = AppSettings.mousecapeAutoApply ? .on : .off
         autoApply.action = #selector(toggleAutoApply(_:))
         autoApply.target = self
         addSubview(autoApply)
         let leftHanded = NSButton(checkboxWithTitle: "左手模式（镜像光标）", target: self, action: #selector(toggleLeftHanded(_:)))
-        leftHanded.frame = NSRect(x: 300, y: 62, width: 220, height: 20)
+        leftHanded.frame = NSRect(x: 300, y: 94, width: 220, height: 20)
         leftHanded.state = MousecapeBridge.isLeftHanded() ? .on : .off
         leftHanded.action = #selector(toggleLeftHanded(_:))
         leftHanded.target = self
         addSubview(leftHanded)
+        let vncStatic = NSButton(checkboxWithTitle: "VNC 兼容：Normal 箭头静态（仅首帧）", target: self, action: #selector(toggleVNCStatic(_:)))
+        vncStatic.frame = NSRect(x: 32, y: 70, width: 330, height: 20)
+        vncStatic.state = AppSettings.mousecapeVNCStatic ? .on : .off
+        vncStatic.toolTip = "开启后只有 Normal 默认箭头取第一帧，其它光标仍保留动画。"
+        addSubview(vncStatic)
+        let launchAtLogin = NSButton(checkboxWithTitle: "开机自启动 XSpace", target: self, action: #selector(toggleLaunchAtLogin(_:)))
+        launchAtLogin.frame = NSRect(x: 372, y: 70, width: 166, height: 20)
+        launchAtLogin.state = LaunchAtLogin.isEnabled ? .on : .off
+        launchAtLogin.toolTip = "登录后自动运行 XSpace；配合「启动时自动应用上次主题」即可自动换图标。"
+        addSubview(launchAtLogin)
         addSubview(note("双击主题可逐个更换光标状态的 ANI；「INF → .cape」按右键安装.inf 批量转换并映射光标类型。",
+                        frame: NSRect(x: 32, y: 48, width: 496, height: 16)))
+        addSubview(note("自启动 + 自动应用 = 登录后自动换图标；VNC 勾选后仅 Normal 箭头取首帧，其余保留动画。",
                         frame: NSRect(x: 32, y: 34, width: 496, height: 16)))
         addSubview(note("核心代码：Alex Zielenski / Mousecape（个人非商业用途）；转换与界面为 XSpace 自研。",
-                        frame: NSRect(x: 32, y: 19, width: 496, height: 16)))
+                        frame: NSRect(x: 32, y: 20, width: 496, height: 16)))
     }
 
     private func label(_ text: String, frame: NSRect, alignment: NSTextAlignment = .left,
@@ -273,7 +352,7 @@ final class MousecapeSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         let row = tableView.selectedRow
         guard themes.indices.contains(row) else { return }
         let theme = themes[row]
-        if MousecapeBridge.applyCape(atPath: theme.url.path) {
+        if MousecapeThemes.apply(theme: theme.url) {
             AppSettings.mousecapeThemePath = theme.url.path
             updateControls()
         } else {
@@ -380,12 +459,30 @@ final class MousecapeSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
 
     @objc private func toggleLeftHanded(_ sender: NSButton) {
         MousecapeBridge.setLeftHanded(sender.state == .on)
-        // 镜像热点需要重新应用当前主题才能生效
-        if let path = AppSettings.mousecapeThemePath,
-           !path.isEmpty, FileManager.default.fileExists(atPath: path) {
-            DispatchQueue.global(qos: .utility).async {
-                _ = MousecapeBridge.applyCape(atPath: path)
-            }
+        reapplyCurrentTheme()
+    }
+
+    @objc private func toggleVNCStatic(_ sender: NSButton) {
+        AppSettings.mousecapeVNCStatic = sender.state == .on
+        reapplyCurrentTheme()
+    }
+
+    @objc private func toggleLaunchAtLogin(_ sender: NSButton) {
+        let enabled = sender.state == .on
+        if !LaunchAtLogin.setEnabled(enabled) {
+            sender.state = .off
+            Dialog.alert(title: "设置失败",
+                         message: "无法写入登录项。请确认 XSpace 已安装到 /Applications，或手动到「系统设置 → 通用 → 登录项与扩展」中添加。")
+        }
+    }
+
+    private func reapplyCurrentTheme() {
+        // 镜像热点 / 静态首帧切换都需要重新应用当前主题才能生效
+        guard let path = AppSettings.mousecapeThemePath,
+              !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return }
+        let url = URL(fileURLWithPath: path)
+        DispatchQueue.global(qos: .utility).async {
+            _ = MousecapeThemes.apply(theme: url)
         }
     }
 }

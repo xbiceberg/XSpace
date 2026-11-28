@@ -185,7 +185,7 @@ final class CursorRemapWindowController: NSWindowController, NSTableViewDataSour
             try WindowsCursorConverter.rewrite(theme: theme.url, replacements: replacements)
             if wasApplied {
                 DispatchQueue.global(qos: .utility).async {
-                    _ = MousecapeBridge.applyCape(atPath: self.theme.url.path)
+                    _ = MousecapeThemes.apply(theme: self.theme.url)
                 }
             }
             onSaved?()
