@@ -775,6 +775,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         buildMainMenu()
         _ = createWindow()
         NSApp.activate(ignoringOtherApps: true)
+        // 光标主题：用户开启后启动时自动恢复上次应用的 .cape
+        MousecapeThemes.autoApplyIfNeeded()
 
         // 系统关机/重启/注销时放行真正退出，避免「XSpace 阻止了关机」。
         // willPowerOffNotification 覆盖关机与重启；注销走 currentEvent 判断（见下）。
@@ -1615,6 +1617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         tabs.addTabViewItem(contextMenuTabItem())
         tabs.addTabViewItem(sevenZipTabItem())
         tabs.addTabViewItem(iconsTabItem())
+        tabs.addTabViewItem(mousecapeTabItem())
         window.contentView = tabs
 
         preferencesTabs = tabs
@@ -1639,6 +1642,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let view = IconSettingsView(frame: NSRect(x: 0, y: 0, width: 560, height: 520))
         let item = NSTabViewItem(identifier: "fileIcons")
         item.label = "图标"
+        item.view = view
+        return item
+    }
+
+    private func mousecapeTabItem() -> NSTabViewItem {
+        let view = MousecapeSettingsView(frame: NSRect(x: 0, y: 0, width: 560, height: 520))
+        let item = NSTabViewItem(identifier: "mousecape")
+        item.label = "光标"
         item.view = view
         return item
     }

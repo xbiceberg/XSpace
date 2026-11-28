@@ -250,6 +250,8 @@ enum AppSettings {
     private static let contextMenuMigratedSevenZipKey = "qspacelite.contextMenuMigratedSevenZip"
     private static let sevenZipFormatKey = "qspacelite.sevenZipFormat"
     private static let sevenZipLevelKey = "qspacelite.sevenZipLevel"
+    private static let mousecapeThemePathKey = "qspacelite.mousecapeThemePath"
+    private static let mousecapeAutoApplyKey = "qspacelite.mousecapeAutoApply"
     private static let fileIconOverridesKey = "qspacelite.fileIconOverrides"
     private static let customIconExtensionsKey = "qspacelite.customIconExtensions"
 
@@ -679,6 +681,32 @@ enum AppSettings {
 
     static func resetContextMenuItems() {
         defaults.removeObject(forKey: contextMenuItemsKey)
+    }
+
+    // MARK: - 光标主题（Mousecape）设置
+
+    /// 上次应用的 .cape 主题路径；移除主题或恢复系统默认时清空
+    static var mousecapeThemePath: String? {
+        get {
+            let value = defaults.string(forKey: mousecapeThemePathKey) ?? ""
+            return value.isEmpty ? nil : value
+        }
+        set {
+            if let path = newValue, !path.isEmpty {
+                defaults.set(path, forKey: mousecapeThemePathKey)
+            } else {
+                defaults.removeObject(forKey: mousecapeThemePathKey)
+            }
+        }
+    }
+
+    /// 启动时自动重新应用上次主题（应对应用光标在重启/注销后失效）
+    static var mousecapeAutoApply: Bool {
+        get {
+            guard defaults.object(forKey: mousecapeAutoApplyKey) != nil else { return false }
+            return defaults.bool(forKey: mousecapeAutoApplyKey)
+        }
+        set { defaults.set(newValue, forKey: mousecapeAutoApplyKey) }
     }
 
     // MARK: - 7-ZIP 设置
