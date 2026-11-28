@@ -42,17 +42,20 @@ enum MousecapeThemes {
                               identifier: identifier, preview: previewImage(from: dict))
     }
 
-    /// 取 Arrow 光标的 2x（或 1x）PNG 作为列表缩略图
+    /// 取 Arrow 光标的第一帧作为列表缩略图。
+    /// 动画帧现在存在纵向 sprite sheet 里，直接缩放整张图会变成一条竖纹，必须先裁出顶部的单帧。
     private static func previewImage(from dict: NSDictionary) -> NSImage? {
         guard let cursors = dict["Cursors"] as? [String: Any] else { return nil }
         let arrow = cursors["com.apple.coregraphics.Arrow"] as? [String: Any]
             ?? cursors.values.compactMap { $0 as? [String: Any] }.first
-        guard let representations = arrow?["Representations"] as? [Any] else { return nil }
-        let data = (representations.count > 1 ? representations[1] : representations.first) as? Data
-            ?? representations.first as? Data
-        guard let image = data.flatMap({ NSImage(data: $0) }) else { return nil }
-        image.size = NSSize(width: 30, height: 30)
-        return image
+        guard let representations = arrow?["Representations"] as? [Any],
+              let data = representations.first as? Data,
+              let image = NSImage(data: data),
+              let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let side = CGFloat(min(cg.width, cg.height))
+        let crop = CGRect(x: 0, y: CGFloat(cg.height) - side, width: side, height: side)
+        guard let topFrame = cg.cropping(to: crop) else { return nil }
+        return NSImage(cgImage: topFrame, size: NSSize(width: 30, height: 30))
     }
 
     /// 首次启动时按用户设置恢复上次应用的主题
@@ -73,6 +76,7 @@ final class MousecapeSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
     private var applyButton: NSButton!
     private var deleteButton: NSButton!
     private var statusLabel: NSTextField!
+    private var remapWindow: CursorRemapWindowController?
     private let tableView = NSTableView(frame: .zero)
 
     override init(frame frameRect: NSRect) {
@@ -121,7 +125,7 @@ final class MousecapeSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         tableView.dataSource = self
         tableView.delegate = self
         tableView.target = self
-        tableView.doubleAction = #selector(applySelectedTheme)
+        tableView.doubleAction = #selector(openCursorEditor)
         tableView.style = .inset
         for (index, title) in ["", "名称", "作者"].enumerated() {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("col\(index)"))
@@ -130,25 +134,22 @@ final class MousecapeSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
             tableView.addTableColumn(column)
         }
 
-        // 操作按钮（两行，避免六个按钮挤在一行）
+        // 操作按钮：一行排开，INF 转换紧挨「导入 .cape」
         applyButton = makeButton("应用所选主题", NSRect(x: 28, y: 136, width: 104, height: 28),
                                  #selector(applySelectedTheme))
         addSubview(applyButton)
         let importButton = makeButton("导入 .cape", NSRect(x: 140, y: 136, width: 100, height: 28),
                                       #selector(importTheme))
         addSubview(importButton)
-        deleteButton = makeButton("移除", NSRect(x: 248, y: 136, width: 72, height: 28),
-                                  #selector(deleteTheme))
-        addSubview(deleteButton)
-        let refresh = makeButton("刷新", NSRect(x: 328, y: 136, width: 72, height: 28),
-                                 #selector(reload))
-        addSubview(refresh)
-        let windowsButton = makeButton("ANI → .cape", NSRect(x: 28, y: 100, width: 110, height: 28),
-                                       #selector(importWindowsCursors))
-        addSubview(windowsButton)
-        let infButton = makeButton("INF → .cape", NSRect(x: 146, y: 100, width: 110, height: 28),
+        let infButton = makeButton("INF → .cape", NSRect(x: 248, y: 136, width: 110, height: 28),
                                    #selector(importINFTheme))
         addSubview(infButton)
+        deleteButton = makeButton("移除", NSRect(x: 366, y: 136, width: 72, height: 28),
+                                  #selector(deleteTheme))
+        addSubview(deleteButton)
+        let refresh = makeButton("刷新", NSRect(x: 446, y: 136, width: 72, height: 28),
+                                 #selector(reload))
+        addSubview(refresh)
 
         // 选项卡片
         addSubview(SettingCardView(frame: NSRect(x: 16, y: 16, width: 528, height: 76)))
@@ -164,7 +165,7 @@ final class MousecapeSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         leftHanded.action = #selector(toggleLeftHanded(_:))
         leftHanded.target = self
         addSubview(leftHanded)
-        addSubview(note("「ANI → .cape」转换目录/文件；「INF → .cape」按右键安装.inf 批量转换并映射光标类型。",
+        addSubview(note("双击主题可逐个更换光标状态的 ANI；「INF → .cape」按右键安装.inf 批量转换并映射光标类型。",
                         frame: NSRect(x: 32, y: 34, width: 496, height: 16)))
         addSubview(note("核心代码：Alex Zielenski / Mousecape（个人非商业用途）；转换与界面为 XSpace 自研。",
                         frame: NSRect(x: 32, y: 19, width: 496, height: 16)))
@@ -254,6 +255,20 @@ final class MousecapeSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
 
     // MARK: - 操作
 
+    @objc private func openCursorEditor() {
+        let row = tableView.selectedRow
+        guard themes.indices.contains(row) else { return }
+        let theme = themes[row]
+        remapWindow = CursorRemapWindowController(
+            theme: theme,
+            onSaved: { [weak self] in self?.reload() },
+            onClosed: { [weak self] in self?.remapWindow = nil }
+        )
+        remapWindow?.showWindow(nil)
+        remapWindow?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     @objc private func applySelectedTheme() {
         let row = tableView.selectedRow
         guard themes.indices.contains(row) else { return }
@@ -301,40 +316,6 @@ final class MousecapeSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
             if let index = themes.firstIndex(where: { $0.url.lastPathComponent == first }) {
                 tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
             }
-        }
-    }
-
-    @objc private func importWindowsCursors() {
-        let panel = NSOpenPanel()
-        panel.title = "转换 Windows 光标"
-        panel.message = "选择包含 .ani/.cur 的文件夹、多个光标文件，或右键安装.inf。"
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = true
-        panel.allowedContentTypes = [
-            UTType(filenameExtension: "ani"), UTType(filenameExtension: "cur"),
-            UTType(filenameExtension: "inf")
-        ].compactMap { $0 }
-        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
-
-        if panel.urls[0].pathExtension.lowercased() == "inf" {
-            convertINF(panel.urls[0])
-            return
-        }
-        do {
-            let result: WindowsCursorConverter.ConversionResult
-            if panel.urls.count == 1, let isDirectory = try? panel.urls[0].resourceValues(forKeys: [.isDirectoryKey]).isDirectory,
-               isDirectory == true {
-                result = try WindowsCursorConverter.convert(folder: panel.urls[0])
-            } else {
-                let themeName = panel.urls.count == 1
-                    ? panel.urls[0].deletingPathExtension().lastPathComponent
-                    : "Windows 光标"
-                result = try WindowsCursorConverter.convert(files: panel.urls, themeName: themeName)
-            }
-            finishConversion(result)
-        } catch {
-            Dialog.alert(title: "转换失败", message: error.localizedDescription)
         }
     }
 

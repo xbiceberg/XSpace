@@ -17,6 +17,14 @@ enum WindowsCursorConverter {
         var skipped: Int = 0
     }
 
+    /// 主题里的一个光标状态（已把 macOS 等效标识归为一组）
+    struct CursorSlot: Equatable {
+        let identifier: String
+        let role: String
+        let sourcePath: String?
+        let frameCount: Int
+    }
+
     // MARK: - 对外接口
 
     /// 把一个目录下的所有 .ani/.cur 合并为一个 .cape 主题
@@ -28,9 +36,9 @@ enum WindowsCursorConverter {
 
     /// 把若干个 .ani/.cur 合并为一个 .cape 主题
     static func convert(files: [URL], themeName: String? = nil) throws -> ConversionResult {
-        var cursors: [String: [String: Any]] = [:]
-        var sourceIdentifiers = Set<String>()
-        var sourceFrames = 0
+        var parsedByID: [String: ParsedCursor] = [:]
+        var sources: [String: String] = [:]
+        var roles: [String: String] = [:]
 
         for file in files {
             let parsed = file.pathExtension.lowercased() == "cur"
@@ -38,19 +46,20 @@ enum WindowsCursorConverter {
                 : parseANI(file)
             guard let parsed else { continue }
             let identifier = macOSIdentifier(for: file.deletingPathExtension().lastPathComponent)
-            if sourceIdentifiers.insert(identifier).inserted {
-                sourceFrames += parsed.frameCount
+            if parsedByID[identifier] == nil {
+                sources[identifier] = file.path
+                roles[identifier] = cursorDisplayName(for: identifier)
             }
-            for key in macOSIdentifiers(includingAliasesOf: identifier) {
-                cursors[key] = parsed.dictionary
-            }
+            parsedByID[identifier] = parsed
         }
-        guard !cursors.isEmpty else { throw ConverterError.unsupportedFile }
+        guard !parsedByID.isEmpty else { throw ConverterError.unsupportedFile }
+        let cursors = assembledCursors(from: parsedByID, sourceKeys: Set(parsedByID.keys))
+        let sourceFrames = parsedByID.values.reduce(0) { $0 + $1.frameCount }
 
         let name = (themeName ?? files.first?.deletingPathExtension().lastPathComponent ?? "Windows 光标")
         return try writeTheme(name: name, author: "Windows 光标导入", cursors: cursors,
-                              sourceCursorCount: sourceIdentifiers.count, sourceFrames: sourceFrames,
-                              skipped: 0)
+                              sourceCursorCount: parsedByID.count, sourceFrames: sourceFrames,
+                              sources: sources, roles: roles, skipped: 0)
     }
 
     /// 按 Windows 光标安装 INF（如“~右键安装.inf”）的 Wreg 注册项批量转换。
@@ -101,9 +110,9 @@ enum WindowsCursorConverter {
         }
 
         let name = strings["scheme_name"] ?? inf.deletingPathExtension().lastPathComponent
-        var cursors: [String: [String: Any]] = [:]
-        var sourceIdentifiers = Set<String>()
-        var sourceFrames = 0
+        var parsedByID: [String: ParsedCursor] = [:]
+        var sources: [String: String] = [:]
+        var roles: [String: String] = [:]
         var skipped = 0
 
         for entry in roleValues {
@@ -115,23 +124,25 @@ enum WindowsCursorConverter {
             }
             let filename = file.deletingPathExtension().lastPathComponent
             let identifier = identifier(forWindowsRole: entry.role, filename: filename)
-            if sourceIdentifiers.insert(identifier).inserted {
-                sourceFrames += parsed.frameCount
+            if parsedByID[identifier] == nil {
+                sources[identifier] = file.path
+                roles[identifier] = entry.role
             }
-            for key in macOSIdentifiers(includingAliasesOf: identifier) {
-                cursors[key] = parsed.dictionary
-            }
+            parsedByID[identifier] = parsed
         }
-        guard !cursors.isEmpty else { throw ConverterError.noCursorFiles }
+        guard !parsedByID.isEmpty else { throw ConverterError.noCursorFiles }
+        let cursors = assembledCursors(from: parsedByID, sourceKeys: Set(parsedByID.keys))
+        let sourceFrames = parsedByID.values.reduce(0) { $0 + $1.frameCount }
 
         return try writeTheme(name: name, author: "Windows 光标导入 · INF", cursors: cursors,
-                              sourceCursorCount: sourceIdentifiers.count, sourceFrames: sourceFrames,
-                              skipped: skipped)
+                              sourceCursorCount: parsedByID.count, sourceFrames: sourceFrames,
+                              sources: sources, roles: roles, skipped: skipped)
     }
 
     private static func writeTheme(name: String, author: String,
                                    cursors: [String: [String: Any]],
                                    sourceCursorCount: Int, sourceFrames: Int,
+                                   sources: [String: String], roles: [String: String],
                                    skipped: Int) throws -> ConversionResult {
         let cape: [String: Any] = [
             "CapeName": name,
@@ -141,7 +152,9 @@ enum WindowsCursorConverter {
             "MinimumVersion": 2.0,
             "HiDPI": true,
             "Cloud": false,
-            "Cursors": cursors
+            "Cursors": cursors,
+            "XSpaceCursorSources": sources,
+            "XSpaceCursorRoles": roles
         ]
 
         let directory = URL(fileURLWithPath: MousecapeBridge.capesDirectory(), isDirectory: true)
@@ -158,6 +171,122 @@ enum WindowsCursorConverter {
         return ConversionResult(url: destination, themeName: name,
                                 cursorCount: sourceCursorCount, frameCount: sourceFrames,
                                 identifierCount: cursors.count, skipped: skipped)
+    }
+
+    /// 读取主题里的光标状态；已把 macOS 等效别名归为一组，便于逐个重新选择 ANI。
+    static func cursorSlots(in theme: URL) -> [CursorSlot] {
+        guard let dict = NSDictionary(contentsOf: theme),
+              let cursors = dict["Cursors"] as? [String: [String: Any]] else { return [] }
+        let sources = dict["XSpaceCursorSources"] as? [String: String] ?? [:]
+        let roles = dict["XSpaceCursorRoles"] as? [String: String] ?? [:]
+        var slots: [CursorSlot] = []
+        if !sources.isEmpty {
+            // 转换时记录了每个 Windows 状态，逐项列出，不按 macOS 别名合并
+            for (key, path) in sources {
+                let cursor = cursors[key] ?? cursors[primaryIdentifier(for: key)]
+                slots.append(CursorSlot(
+                    identifier: key,
+                    role: roles[key] ?? cursorDisplayName(for: key),
+                    sourcePath: path,
+                    frameCount: (cursor?["FrameCount"] as? Int) ?? 0
+                ))
+            }
+        } else {
+            // 旧主题没有源记录，按等效标识归并后显示
+            var grouped: [String: CursorSlot] = [:]
+            for (key, value) in cursors {
+                let primary = primaryIdentifier(for: key)
+                guard grouped[primary] == nil else { continue }
+                grouped[primary] = CursorSlot(
+                    identifier: primary,
+                    role: cursorDisplayName(for: primary),
+                    sourcePath: nil,
+                    frameCount: (value["FrameCount"] as? Int) ?? 0
+                )
+            }
+            slots = Array(grouped.values)
+        }
+        return slots.sorted {
+            let a = "\($0.role)|\($0.identifier)"
+            let b = "\($1.role)|\($1.identifier)"
+            return a.localizedCaseInsensitiveCompare(b) == .orderedAscending
+        }
+    }
+
+    /// 替换主题中若干光标状态对应的 ANI/CUR；保留其余状态与主题元信息。
+    static func rewrite(theme: URL, replacements: [String: URL]) throws -> ConversionResult {
+        guard let dict = NSDictionary(contentsOf: theme),
+              var cursors = dict["Cursors"] as? [String: [String: Any]] else {
+            throw ConverterError.unsupportedFile
+        }
+        var sources = dict["XSpaceCursorSources"] as? [String: String] ?? [:]
+        var roles = dict["XSpaceCursorRoles"] as? [String: String] ?? [:]
+        var frames = 0
+
+        let sourceKeys = Set(sources.keys)
+        for (identifier, file) in replacements {
+            let parsed = file.pathExtension.lowercased() == "cur"
+                ? parseSingleCUR(file)
+                : parseANI(file)
+            guard let parsed else { throw ConverterError.unsupportedFile }
+            cursors[identifier] = parsed.dictionary
+            for key in macOSIdentifiers(includingAliasesOf: identifier) {
+                // 有源记录时，其它真实状态由各自的条目负责，不能被别名覆盖
+                if !sourceKeys.isEmpty && sourceKeys.contains(key) && key != identifier { continue }
+                if cursors[key] == nil || !sourceKeys.contains(key) {
+                    cursors[key] = parsed.dictionary
+                }
+            }
+            sources[identifier] = file.path
+            roles[identifier] = roles[identifier] ?? cursorDisplayName(for: identifier)
+            frames += parsed.frameCount
+        }
+
+        let mutable = dict.mutableCopy() as! NSMutableDictionary
+        mutable["Cursors"] = cursors
+        mutable["XSpaceCursorSources"] = sources
+        mutable["XSpaceCursorRoles"] = roles
+        guard mutable.write(to: theme, atomically: true) else { throw ConverterError.writeFailed }
+
+        return ConversionResult(
+            url: theme,
+            themeName: dict["CapeName"] as? String ?? theme.deletingPathExtension().lastPathComponent,
+            cursorCount: replacements.count,
+            frameCount: frames,
+            identifierCount: cursors.count
+        )
+    }
+
+    /// 友好的光标状态名称，供编辑窗口显示
+    static func cursorDisplayName(for identifier: String) -> String {
+        let names: [String: String] = [
+            "com.apple.coregraphics.Arrow": "普通选择（箭头）",
+            "com.apple.coregraphics.IBeam": "文本选择",
+            "com.apple.coregraphics.Wait": "等待 / 忙碌",
+            "com.apple.coregraphics.Move": "移动",
+            "com.apple.cursor.2": "链接选择",
+            "com.apple.cursor.3": "不可用",
+            "com.apple.cursor.4": "后台工作",
+            "com.apple.cursor.7": "精确选择 / 十字",
+            "com.apple.cursor.10": "定位选择",
+            "com.apple.cursor.13": "手写",
+            "com.apple.cursor.16": "替代选择",
+            "com.apple.cursor.19": "水平调整大小",
+            "com.apple.cursor.23": "垂直调整大小",
+            "com.apple.cursor.30": "对角调整 2",
+            "com.apple.cursor.34": "对角调整 1",
+            "com.apple.cursor.40": "帮助选择",
+            "com.apple.cursor.41": "人员选择"
+        ]
+        return names[identifier] ?? identifier
+    }
+
+    /// 把 macOS 等效标识归到同一主标识
+    private static func primaryIdentifier(for key: String) -> String {
+        for (primary, aliases) in macOSAliasGroups {
+            if aliases.contains(key) { return primary }
+        }
+        return key
     }
 
     enum ConverterError: LocalizedError {
@@ -538,6 +667,20 @@ enum WindowsCursorConverter {
 
     private static func macOSIdentifiers(includingAliasesOf identifier: String) -> [String] {
         macOSAliasGroups[identifier] ?? [identifier]
+    }
+
+    /// 先写入每个真实状态，再用别名补齐空缺；避免等效别名互相覆盖不同状态。
+    private static func assembledCursors(from parsed: [String: ParsedCursor],
+                                         sourceKeys: Set<String>) -> [String: [String: Any]] {
+        var cursors: [String: [String: Any]] = [:]
+        for (identifier, cursor) in parsed { cursors[identifier] = cursor.dictionary }
+        for (identifier, cursor) in parsed {
+            for alias in macOSIdentifiers(includingAliasesOf: identifier) {
+                if sourceKeys.contains(alias) { continue }
+                if cursors[alias] == nil { cursors[alias] = cursor.dictionary }
+            }
+        }
+        return cursors
     }
 
     /// 把各帧缩放为 2x 后纵向拼成一张 sprite sheet，Mousecape 用一张图 + FrameCount 表示动画。
